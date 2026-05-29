@@ -22,10 +22,13 @@
     "cast"
   ],
   "scripts": {
+    "format": "biome check --write .",
+    "lint": "biome check .",
+    "check": "biome ci .",
     "test": "bun test --timeout 30000",
     "typecheck": "tsgo --noEmit",
     "build": "tsc",
-    "prepack": "bun run typecheck && bun run build"
+    "prepack": "bun run check && bun run typecheck && bun run build"
   },
   "exports": {
     ".": {
@@ -58,6 +61,7 @@
     "zod": "4.1.8"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.16",
     "@tsconfig/node22": "22.0.2",
     "@types/bun": "1.3.13",
     "@types/node": "24.12.2",

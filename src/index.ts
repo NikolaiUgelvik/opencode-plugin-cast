@@ -1,3 +1,1 @@
-import { castPlugin } from "./plugin.js"
-
-export default castPlugin
+export { castPlugin as default } from "./plugin.js"

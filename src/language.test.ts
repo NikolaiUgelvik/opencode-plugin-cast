@@ -29,7 +29,11 @@ describe("language registry", () => {
   })
 
   test("shares parser initialization across concurrent first parses", async () => {
-    const parses = await Promise.all(Array.from({ length: 12 }, (_, index) => parseSource(`src/app-${index}.ts`, `export const value${index} = ${index}\n`)))
+    const parses = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        parseSource(`src/app-${index}.ts`, `export const value${index} = ${index}\n`),
+      ),
+    )
 
     expect(parses.every((parsed) => parsed.language === "typescript")).toBe(true)
     expect(parses.every((parsed) => parsed.root?.type === "program")).toBe(true)

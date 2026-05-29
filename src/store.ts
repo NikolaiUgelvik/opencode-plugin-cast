@@ -42,7 +42,9 @@ export function createIndexStore(input: { cacheDir: string; cacheKey: string }) 
       }
       try {
         const index = await Bun.file(file).json()
-        if (isCastIndex(index)) return index
+        if (isCastIndex(index)) {
+          return index
+        }
         return createEmptyIndex({
           projectId: input.cacheKey,
           worktree: "",
@@ -92,7 +94,9 @@ function isCastIndex(value: unknown): value is CastIndex {
 }
 
 function isIndexMetadata(value: unknown) {
-  if (!isObject(value)) return false
+  if (!isObject(value)) {
+    return false
+  }
   return (
     value.schemaVersion === INDEX_SCHEMA_VERSION &&
     typeof value.projectId === "string" &&

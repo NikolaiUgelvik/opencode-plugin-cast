@@ -1,9 +1,10 @@
 import type { SourceRange } from "./types.js"
 
 const encoder = new TextEncoder()
+const WHITESPACE_PATTERN = /\s/
 
 export function nonWhitespaceLength(text: string) {
-  return [...text].filter((character) => !/\s/.test(character)).length
+  return [...text].filter((character) => !WHITESPACE_PATTERN.test(character)).length
 }
 
 export function rangeForSlice(source: string, byteStart: number, byteEnd: number): SourceRange {
@@ -26,7 +27,9 @@ function stringOffsetForByteOffset(source: string, byteOffset: number) {
   let offset = 0
 
   for (const character of source) {
-    if (bytes >= byteOffset) return offset
+    if (bytes >= byteOffset) {
+      return offset
+    }
     bytes += encoder.encode(character).length
     offset += character.length
   }

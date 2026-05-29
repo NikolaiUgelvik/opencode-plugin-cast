@@ -23,7 +23,7 @@ export function castChunks(input: {
     return [makeChunk(input, "file", input.root.startIndex, input.root.endIndex, [input.root.type])]
   }
 
-  if (!input.root.children.length) {
+  if (input.root.children.length === 0) {
     return fallbackChunks({
       filePath: input.filePath,
       language: input.language,
@@ -45,7 +45,10 @@ function chunkChildren(
   let pending: SyntaxNode[] = []
 
   for (const child of nodes) {
-    if (nonWhitespaceLength(textForByteSlice(input.source, child.startIndex, child.endIndex)) > input.maxNonWhitespaceChars) {
+    if (
+      nonWhitespaceLength(textForByteSlice(input.source, child.startIndex, child.endIndex)) >
+      input.maxNonWhitespaceChars
+    ) {
       const pendingChunks = flushPending(input, pending, parentChunkId)
       chunks.push(...pendingChunks)
       siblingChunks.push(...pendingChunks)
@@ -54,7 +57,11 @@ function chunkChildren(
       continue
     }
 
-    if (pending.length && nonWhitespaceLength(textForByteSlice(input.source, pending[0].startIndex, child.endIndex)) > input.maxNonWhitespaceChars) {
+    if (
+      pending.length > 0 &&
+      nonWhitespaceLength(textForByteSlice(input.source, pending[0].startIndex, child.endIndex)) >
+        input.maxNonWhitespaceChars
+    ) {
       const pendingChunks = flushPending(input, pending, parentChunkId)
       chunks.push(...pendingChunks)
       siblingChunks.push(...pendingChunks)
@@ -71,19 +78,30 @@ function chunkChildren(
   return chunks.map((chunk) => linkedSiblingChunks.find((siblingChunk) => siblingChunk.id === chunk.id) ?? chunk)
 }
 
-function chunkOversizedNode(input: { filePath: string; language: string; source: string; maxNonWhitespaceChars: number }, node: SyntaxNode) {
-  if (node.children.length) return chunkChildren(input, node.children, stableChunkId(input.filePath, node.startIndex, node.endIndex))
-  return linkSiblings(fallbackChunks({
-    filePath: input.filePath,
-    language: input.language,
-    text: textForByteSlice(input.source, node.startIndex, node.endIndex),
-    maxNonWhitespaceChars: input.maxNonWhitespaceChars,
-  }).map((chunk) => ({
-    ...chunk,
-    id: stableChunkId(input.filePath, node.startIndex + chunk.range.byteStart, node.startIndex + chunk.range.byteEnd),
-    range: rangeForSlice(input.source, node.startIndex + chunk.range.byteStart, node.startIndex + chunk.range.byteEnd),
-    parentChunkId: stableChunkId(input.filePath, node.startIndex, node.endIndex),
-  })))
+function chunkOversizedNode(
+  input: { filePath: string; language: string; source: string; maxNonWhitespaceChars: number },
+  node: SyntaxNode,
+) {
+  if (node.children.length > 0) {
+    return chunkChildren(input, node.children, stableChunkId(input.filePath, node.startIndex, node.endIndex))
+  }
+  return linkSiblings(
+    fallbackChunks({
+      filePath: input.filePath,
+      language: input.language,
+      text: textForByteSlice(input.source, node.startIndex, node.endIndex),
+      maxNonWhitespaceChars: input.maxNonWhitespaceChars,
+    }).map((chunk) => ({
+      ...chunk,
+      id: stableChunkId(input.filePath, node.startIndex + chunk.range.byteStart, node.startIndex + chunk.range.byteEnd),
+      range: rangeForSlice(
+        input.source,
+        node.startIndex + chunk.range.byteStart,
+        node.startIndex + chunk.range.byteEnd,
+      ),
+      parentChunkId: stableChunkId(input.filePath, node.startIndex, node.endIndex),
+    })),
+  )
 }
 
 function flushPending(
@@ -91,8 +109,24 @@ function flushPending(
   pending: SyntaxNode[],
   parentChunkId: string | undefined,
 ) {
-  if (!pending.length) return []
-  return [makeChunk(input, kindFor(pending), pending[0].startIndex, pending[pending.length - 1].endIndex, pending.map((node) => node.type), parentChunkId)]
+  if (pending.length === 0) {
+    return []
+  }
+  const first = pending[0]
+  const last = pending.at(-1)
+  if (!(first && last)) {
+    return []
+  }
+  return [
+    makeChunk(
+      input,
+      kindFor(pending),
+      first.startIndex,
+      last.endIndex,
+      pending.map((node) => node.type),
+      parentChunkId,
+    ),
+  ]
 }
 
 function makeChunk(
@@ -127,9 +161,15 @@ function linkSiblings(chunks: ChunkRecord[]) {
 }
 
 function kindFor(nodes: SyntaxNode[]) {
-  if (nodes.some((node) => node.type.includes("class"))) return "class"
-  if (nodes.some((node) => node.type.includes("method"))) return "method"
-  if (nodes.some((node) => node.type.includes("function"))) return "function"
+  if (nodes.some((node) => node.type.includes("class"))) {
+    return "class"
+  }
+  if (nodes.some((node) => node.type.includes("method"))) {
+    return "method"
+  }
+  if (nodes.some((node) => node.type.includes("function"))) {
+    return "function"
+  }
   return "block"
 }
 

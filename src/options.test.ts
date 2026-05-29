@@ -32,7 +32,7 @@ describe("parseOptions", () => {
       enabled: true,
     })
     expect(options.maxChunkNonWhitespaceChars).toBe(2000)
-    expect(options.maxContextChars).toBe(12000)
+    expect(options.maxContextChars).toBe(12_000)
     expect(options.topK).toBe(5)
   })
 

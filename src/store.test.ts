@@ -1,8 +1,8 @@
+import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { describe, expect, test } from "bun:test"
-import { createEmptyIndex, createIndexStore, cosineSimilarity, searchVectors } from "./store.js"
+import { cosineSimilarity, createEmptyIndex, createIndexStore, searchVectors } from "./store.js"
 
 describe("index store", () => {
   test("writes and reads an index", async () => {
@@ -143,10 +143,7 @@ describe("index store", () => {
       })
       await mkdir(path.join(dir, "project"), { recursive: true })
 
-      await Bun.write(
-        path.join(dir, "project", "index.json"),
-        JSON.stringify({ ...index, files: { "a.ts": {} } }),
-      )
+      await Bun.write(path.join(dir, "project", "index.json"), JSON.stringify({ ...index, files: { "a.ts": {} } }))
       expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
 
       await Bun.write(path.join(dir, "project", "index.json"), JSON.stringify({ ...index, chunks: { c: {} } }))

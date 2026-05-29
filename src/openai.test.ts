@@ -26,7 +26,10 @@ describe("createOpenAIClient", () => {
       "content-type": "application/json",
       authorization: "Bearer key",
     })
-    expect(JSON.parse(String((calls[0] as { init: RequestInit }).init.body))).toEqual({ model: "embed", input: "hello" })
+    expect(JSON.parse(String((calls[0] as { init: RequestInit }).init.body))).toEqual({
+      model: "embed",
+      input: "hello",
+    })
   })
 
   test("passes optional embedding dimensions", async () => {
@@ -120,7 +123,9 @@ describe("createOpenAIClient", () => {
     ).rejects.toThrow("HyDE request failed: 429")
 
     await expect(
-      createOpenAIClient({ fetch: async () => Response.json({ choices: [{ message: { content: "   " } }] }) }).generateHyde({
+      createOpenAIClient({
+        fetch: async () => Response.json({ choices: [{ message: { content: "   " } }] }),
+      }).generateHyde({
         baseURL: "https://example.test/v1",
         model: "chat",
         query: "hello",

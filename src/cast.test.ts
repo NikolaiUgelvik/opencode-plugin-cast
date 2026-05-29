@@ -46,7 +46,10 @@ describe("castChunks", () => {
       language: "typescript",
       source,
       root: node("program", 0, source.length, [
-        node("class_declaration", 0, source.length, [node("method_definition", 10, 19), node("method_definition", 19, 27)]),
+        node("class_declaration", 0, source.length, [
+          node("method_definition", 10, 19),
+          node("method_definition", 19, 27),
+        ]),
       ]),
       maxNonWhitespaceChars: 8,
     })
@@ -56,6 +59,7 @@ describe("castChunks", () => {
   })
 
   test("falls back for oversized childless roots", () => {
+    // biome-ignore lint/security/noSecrets: fixture text is not a credential.
     const source = "abcdef\nghijkl\n"
     const chunks = castChunks({
       filePath: "src/a.txt",
@@ -109,7 +113,9 @@ describe("castChunks", () => {
     expect(chunks).toHaveLength(4)
     expect(chunks.map((chunk) => chunk.range.byteStart)).toEqual([7, 13, 16, 22])
     expect(chunks.map((chunk) => chunk.range.byteEnd)).toEqual([13, 16, 22, 25])
-    expect(chunks.every((chunk) => !chunk.previousSiblingChunkId || chunkIds.has(chunk.previousSiblingChunkId))).toBe(true)
+    expect(chunks.every((chunk) => !chunk.previousSiblingChunkId || chunkIds.has(chunk.previousSiblingChunkId))).toBe(
+      true,
+    )
     expect(chunks.every((chunk) => !chunk.nextSiblingChunkId || chunkIds.has(chunk.nextSiblingChunkId))).toBe(true)
   })
 })

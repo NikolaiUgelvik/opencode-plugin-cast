@@ -1,7 +1,7 @@
+import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, symlink, utimes } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { describe, expect, test } from "bun:test"
 import { createIndexer } from "./scanner.js"
 import { createEmptyIndex, createIndexStore } from "./store.js"
 
@@ -19,7 +19,13 @@ describe("createIndexer", () => {
       })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -55,7 +61,13 @@ describe("createIndexer", () => {
       const embeddedTexts: string[] = []
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -87,7 +99,13 @@ describe("createIndexer", () => {
       const store = createIndexStore({ cacheDir, cacheKey: "key" })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 17, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 17,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store,
         parse: async () => ({ language: "typescript", root: undefined }),
         embed: async () => [1, 0],
@@ -113,7 +131,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -124,7 +148,12 @@ describe("createIndexer", () => {
           parseCalls++
           return {
             language: "typescript",
-            root: { type: "program", startIndex: 0, endIndex: source.length, children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }] },
+            root: {
+              type: "program",
+              startIndex: 0,
+              endIndex: source.length,
+              children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }],
+            },
           }
         },
         embed: async () => {
@@ -162,7 +191,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -200,7 +235,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -238,7 +279,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -261,7 +308,11 @@ describe("createIndexer", () => {
 
       expect(parseCalls).toBe(2)
       expect(embedCalls).toBe(2)
-      expect(Object.values(index.chunks).flatMap((chunk) => chunk.childChunkIds).every((id) => index.chunks[id])).toBe(true)
+      expect(
+        Object.values(index.chunks)
+          .flatMap((chunk) => chunk.childChunkIds)
+          .every((id) => index.chunks[id]),
+      ).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -277,7 +328,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -302,7 +359,11 @@ describe("createIndexer", () => {
       expect(parseCalls).toBe(3)
       expect(embedCalls).toBe(3)
       expect(Object.keys(index.files)).toEqual(["a.ts"])
-      expect(Object.values(index.chunks).flatMap((chunk) => chunk.childChunkIds).every((id) => index.chunks[id])).toBe(true)
+      expect(
+        Object.values(index.chunks)
+          .flatMap((chunk) => chunk.childChunkIds)
+          .every((id) => index.chunks[id]),
+      ).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -318,7 +379,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -342,7 +409,11 @@ describe("createIndexer", () => {
 
       expect(parseCalls).toBe(4)
       expect(embedCalls).toBe(4)
-      expect(Object.values(index.chunks).flatMap((chunk) => chunk.childChunkIds).every((id) => index.chunks[id])).toBe(true)
+      expect(
+        Object.values(index.chunks)
+          .flatMap((chunk) => chunk.childChunkIds)
+          .every((id) => index.chunks[id]),
+      ).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -357,7 +428,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -382,7 +459,11 @@ describe("createIndexer", () => {
       expect(parseCalls).toBe(2)
       expect(embedCalls).toBe(2)
       expect(index.files["a.ts"].path).toBe("a.ts")
-      expect(Object.values(index.chunks).every((chunk) => chunk.filePath === "a.ts" && chunk.language === index.files["a.ts"].language)).toBe(true)
+      expect(
+        Object.values(index.chunks).every(
+          (chunk) => chunk.filePath === "a.ts" && chunk.language === index.files["a.ts"].language,
+        ),
+      ).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -397,7 +478,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -435,7 +522,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -446,7 +539,12 @@ describe("createIndexer", () => {
           parseCalls++
           return {
             language: "typescript",
-            root: { type: "program", startIndex: 0, endIndex: source.length, children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }] },
+            root: {
+              type: "program",
+              startIndex: 0,
+              endIndex: source.length,
+              children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }],
+            },
           }
         },
         embed: async () => {
@@ -461,7 +559,11 @@ describe("createIndexer", () => {
 
       expect(parseCalls).toBe(2)
       expect(embedCalls).toBe(2)
-      expect(Object.values(index.chunks).flatMap((chunk) => chunk.symbolIds).every((id) => index.symbols[id]?.id === id)).toBe(true)
+      expect(
+        Object.values(index.chunks)
+          .flatMap((chunk) => chunk.symbolIds)
+          .every((id) => index.symbols[id]?.id === id),
+      ).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -475,7 +577,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -484,7 +592,12 @@ describe("createIndexer", () => {
         },
         parse: async (_filePath, source) => ({
           language: "typescript",
-          root: { type: "program", startIndex: 0, endIndex: source.length, children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }] },
+          root: {
+            type: "program",
+            startIndex: 0,
+            endIndex: source.length,
+            children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }],
+          },
         }),
         embed: async (text) => {
           embeddedTexts.push(text)
@@ -512,7 +625,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -525,7 +644,9 @@ describe("createIndexer", () => {
         },
         embed: async () => {
           embedCalls++
-          if (embedCalls === 1) throw new Error("temporary embed failure")
+          if (embedCalls === 1) {
+            throw new Error("temporary embed failure")
+          }
           return [1, 0]
         },
       })
@@ -553,7 +674,13 @@ describe("createIndexer", () => {
       let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 2000, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -564,7 +691,12 @@ describe("createIndexer", () => {
           parseCalls++
           return {
             language: "typescript",
-            root: { type: "program", startIndex: 0, endIndex: source.length, children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }] },
+            root: {
+              type: "program",
+              startIndex: 0,
+              endIndex: source.length,
+              children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }],
+            },
           }
         },
         embed: async () => {
@@ -579,7 +711,11 @@ describe("createIndexer", () => {
 
       expect(parseCalls).toBe(2)
       expect(embedCalls).toBe(2)
-      expect(Object.values(index.chunks).flatMap((chunk) => chunk.symbolIds).every((id) => index.symbols[id])).toBe(true)
+      expect(
+        Object.values(index.chunks)
+          .flatMap((chunk) => chunk.symbolIds)
+          .every((id) => index.symbols[id]),
+      ).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -594,7 +730,13 @@ describe("createIndexer", () => {
       let embedCalls = 0
       const indexer = createIndexer({
         worktree: dir,
-        options: { maxChunkNonWhitespaceChars: 1, includeGlobs: ["**/*.ts"], excludeGlobs: [], topK: 5, maxContextChars: 12000 },
+        options: {
+          maxChunkNonWhitespaceChars: 1,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
         store: {
           read: async () => index,
           write: async (next) => {
@@ -605,7 +747,9 @@ describe("createIndexer", () => {
         parse: async () => ({ language: "typescript", root: undefined }),
         embed: async () => {
           embedCalls++
-          if (embedCalls === 1) throw new Error("embed failed")
+          if (embedCalls === 1) {
+            throw new Error("embed failed")
+          }
           return [1, 0]
         },
       })

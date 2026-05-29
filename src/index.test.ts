@@ -1,7 +1,7 @@
+import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { describe, expect, test } from "bun:test"
 import castPlugin from "./index.js"
 import { createCastPluginForTest } from "./plugin.js"
 import { createEmptyIndex } from "./store.js"
@@ -31,10 +31,15 @@ describe("cast plugin", () => {
 
   test("semantic_search_code returns configuration error when embeddings are missing", async () => {
     const hooks = await castPlugin(input as never, {})
-    const result = await hooks.tool!.semantic_search_code.execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never)
+    const result = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
 
     expect(typeof result).toBe("object")
-    if (typeof result === "string") throw new Error("expected object tool result")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
     expect(result.title).toBe("Semantic code search is not configured")
     expect(result.output).toContain("embedding.model is required")
     expect(result.metadata).toEqual({ configured: false })
@@ -52,7 +57,16 @@ describe("cast plugin", () => {
           if (url.endsWith("/chat/completions")) {
             return Response.json({ choices: [{ message: { content: "session function" } }] })
           }
-          return Response.json({ data: [{ embedding: body.input === "session function" || String(body.input).includes("export function session") ? [0, 1] : [1, 0] }] })
+          return Response.json({
+            data: [
+              {
+                embedding:
+                  body.input === "session function" || String(body.input).includes("export function session")
+                    ? [0, 1]
+                    : [1, 0],
+              },
+            ],
+          })
         },
       })
       const hooks = await plugin({ ...input, directory: dir, worktree: dir } as never, {
@@ -61,16 +75,35 @@ describe("cast plugin", () => {
         hyde: { model: "hyde", threshold: 1, enabled: true },
       })
 
-      const result = await hooks.tool!.semantic_search_code.execute({ query: "session", topK: 1, includeParents: false, paths: ["code.ts"] }, { worktree: dir, directory: dir } as never)
+      const result = await semanticSearchTool(hooks).execute(
+        { query: "session", topK: 1, includeParents: false, paths: ["code.ts"] },
+        { worktree: dir, directory: dir } as never,
+      )
 
       expect(typeof result).toBe("object")
-      if (typeof result === "string") throw new Error("expected object tool result")
+      if (typeof result === "string") {
+        throw new Error("expected object tool result")
+      }
       expect(result.title).toBe("Semantic code search: session")
       expect(result.metadata).toEqual({ hydeUsed: true, resultCount: 1 })
       expect(JSON.parse(result.output).results[0].filePath).toBe("code.ts")
-      expect(fetchCalls.some((call) => call.url.endsWith("/embeddings") && (call.body as { input: string }).input.includes("export function session"))).toBe(true)
-      expect(fetchCalls.some((call) => call.url.endsWith("/embeddings") && (call.body as { input: string }).input === "session")).toBe(true)
-      expect(fetchCalls.some((call) => call.url.endsWith("/chat/completions") && (call.body as { model: string }).model === "hyde")).toBe(true)
+      expect(
+        fetchCalls.some(
+          (call) =>
+            call.url.endsWith("/embeddings") &&
+            (call.body as { input: string }).input.includes("export function session"),
+        ),
+      ).toBe(true)
+      expect(
+        fetchCalls.some(
+          (call) => call.url.endsWith("/embeddings") && (call.body as { input: string }).input === "session",
+        ),
+      ).toBe(true)
+      expect(
+        fetchCalls.some(
+          (call) => call.url.endsWith("/chat/completions") && (call.body as { model: string }).model === "hyde",
+        ),
+      ).toBe(true)
       await hooks.dispose?.()
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -80,15 +113,27 @@ describe("cast plugin", () => {
   test("refresh true forces an additional refresh before searching", async () => {
     const refreshes: string[] = []
     const plugin = createCastPluginForTest({
-      createIndexer: () => ({ refresh: async () => (refreshes.push("refresh"), emptyReadyIndex()) }),
+      createIndexer: () => ({
+        refresh: async () => {
+          refreshes.push("refresh")
+          return emptyReadyIndex()
+        },
+      }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
-      retrieve: async () => ({ status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }),
+      retrieve: async () => ({
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        results: [],
+        diagnostics: [],
+      }),
     })
     const hooks = await plugin(input as never, {
       embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
     })
 
-    await hooks.tool!.semantic_search_code.execute({ query: "session", refresh: true }, { worktree: "/repo", directory: "/repo" } as never)
+    await semanticSearchTool(hooks).execute({ query: "session", refresh: true }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
 
     expect(refreshes).toHaveLength(2)
   })
@@ -98,24 +143,32 @@ describe("cast plugin", () => {
     const events: string[] = []
     const plugin = createCastPluginForTest({
       createIndexer: () => ({
-        refresh: () => events.length === 0
-          ? new Promise((resolve) => {
-            events.push("startup started")
-            resolveStartupRefresh = () => {
-              events.push("startup finished")
-              resolve(emptyReadyIndex())
-            }
-          })
-          : Promise.resolve((events.push("forced started"), emptyReadyIndex())),
+        refresh: () =>
+          events.length === 0
+            ? new Promise((resolve) => {
+                events.push("startup started")
+                resolveStartupRefresh = () => {
+                  events.push("startup finished")
+                  resolve(emptyReadyIndex())
+                }
+              })
+            : Promise.resolve(recordEventAndReturnIndex(events, "forced started")),
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
-      retrieve: async () => ({ status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }),
+      retrieve: async () => ({
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        results: [],
+        diagnostics: [],
+      }),
     })
     const hooks = await plugin(input as never, {
       embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
     })
 
-    const executing = hooks.tool!.semantic_search_code.execute({ query: "session", refresh: true }, { worktree: "/repo", directory: "/repo" } as never)
+    const executing = semanticSearchTool(hooks).execute({ query: "session", refresh: true }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(events).toEqual(["startup started"])
     resolveStartupRefresh?.()
@@ -150,18 +203,29 @@ describe("cast plugin", () => {
             })
           }
           events.push("forced 2 started")
-          return Promise.resolve((events.push("forced 2 finished"), emptyReadyIndex()))
+          events.push("forced 2 finished")
+          return Promise.resolve(emptyReadyIndex())
         },
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
-      retrieve: async () => ({ status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }),
+      retrieve: async () => ({
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        results: [],
+        diagnostics: [],
+      }),
     })
     const hooks = await plugin(input as never, {
       embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
     })
 
-    const first = hooks.tool!.semantic_search_code.execute({ query: "first", refresh: true }, { worktree: "/repo", directory: "/repo" } as never)
-    const second = hooks.tool!.semantic_search_code.execute({ query: "second", refresh: true }, { worktree: "/repo", directory: "/repo" } as never)
+    const first = semanticSearchTool(hooks).execute({ query: "first", refresh: true }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+    const second = semanticSearchTool(hooks).execute({ query: "second", refresh: true }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(events).toEqual(["startup started"])
     resolveStartupRefresh?.()
@@ -170,23 +234,43 @@ describe("cast plugin", () => {
     resolveFirstForcedRefresh?.()
     await Promise.all([first, second])
 
-    expect(events).toEqual(["startup started", "startup finished", "forced 1 started", "forced 1 finished", "forced 2 started", "forced 2 finished"])
+    expect(events).toEqual([
+      "startup started",
+      "startup finished",
+      "forced 1 started",
+      "forced 1 finished",
+      "forced 2 started",
+      "forced 2 finished",
+    ])
   })
 
   test("background refresh failure does not reject initialization or configured search", async () => {
     const plugin = createCastPluginForTest({
-      createIndexer: () => ({ refresh: async () => { throw new Error("refresh failed") } }),
+      createIndexer: () => ({
+        refresh: async () => {
+          throw new Error("refresh failed")
+        },
+      }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
-      retrieve: async () => ({ status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }),
+      retrieve: async () => ({
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        results: [],
+        diagnostics: [],
+      }),
     })
 
     const hooks = await plugin(input as never, {
       embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
     })
-    const result = await hooks.tool!.semantic_search_code.execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never)
+    const result = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
 
     expect(typeof result).toBe("object")
-    if (typeof result === "string") throw new Error("expected object tool result")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
     expect(result.metadata).toEqual({ hydeUsed: false, resultCount: 0 })
   })
 
@@ -196,7 +280,9 @@ describe("cast plugin", () => {
     const plugin = createCastPluginForTest({
       fetch: async (url, init) => {
         const body = JSON.parse(String(init.body))
-        if (url.endsWith("/chat/completions")) return Response.json({ choices: [{ message: { content: `hyde:${body.messages[1].content}` } }] })
+        if (url.endsWith("/chat/completions")) {
+          return Response.json({ choices: [{ message: { content: `hyde:${body.messages[1].content}` } }] })
+        }
         return Response.json({ data: [{ embedding: String(body.input).startsWith("hyde:") ? [2] : [1] }] })
       },
       createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
@@ -207,7 +293,11 @@ describe("cast plugin", () => {
         seen.embed = await input.embed("query text")
         seen.hyde = await input.generateHyde("query text")
         seen.source = await input.readSource("nested/source.ts")
-        return { status: { ...index.metadata, hydeUsed: true }, results: [{ filePath: "nested/source.ts" } as never], diagnostics: [] }
+        return {
+          status: { ...index.metadata, hydeUsed: true },
+          results: [{ filePath: "nested/source.ts" } as never],
+          diagnostics: [],
+        }
       },
     })
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-plugin-"))
@@ -218,10 +308,19 @@ describe("cast plugin", () => {
         embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
         hyde: { model: "hyde", enabled: true },
       })
-      await hooks.tool!.semantic_search_code.execute({ query: "query text", topK: 3, maxContextChars: 50, includeParents: true, paths: ["nested"] }, { worktree: dir, directory: dir } as never)
+      await semanticSearchTool(hooks).execute(
+        { query: "query text", topK: 3, maxContextChars: 50, includeParents: true, paths: ["nested"] },
+        { worktree: dir, directory: dir } as never,
+      )
 
       expect(seen.index).toBe(index)
-      expect(seen.input).toEqual({ query: "query text", topK: 3, maxContextChars: 50, includeParents: true, paths: ["nested"] })
+      expect(seen.input).toEqual({
+        query: "query text",
+        topK: 3,
+        maxContextChars: 50,
+        includeParents: true,
+        paths: ["nested"],
+      })
       expect(seen.embed).toEqual([1])
       expect(seen.hyde).toBe("hyde:query text")
       expect(seen.source).toBe("source text")
@@ -238,7 +337,9 @@ describe("cast plugin", () => {
       createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async (input) => {
-        await input.readSource(outsideRelativePath).catch(() => { rejected = true })
+        await input.readSource(outsideRelativePath).catch(() => {
+          rejected = true
+        })
         return { status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }
       },
     })
@@ -250,12 +351,14 @@ describe("cast plugin", () => {
       const hooks = await plugin({ ...input, directory: dir, worktree: dir } as never, {
         embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
       })
-      await hooks.tool!.semantic_search_code.execute({ query: "session" }, { worktree: dir, directory: dir } as never)
+      await semanticSearchTool(hooks).execute({ query: "session" }, { worktree: dir, directory: dir } as never)
 
       expect(rejected).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })
-      if (outsidePath) await rm(outsidePath, { force: true })
+      if (outsidePath) {
+        await rm(outsidePath, { force: true })
+      }
     }
   })
 
@@ -265,7 +368,9 @@ describe("cast plugin", () => {
       createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async (input) => {
-        await input.readSource("secret-link.ts").catch(() => { rejected = true })
+        await input.readSource("secret-link.ts").catch(() => {
+          rejected = true
+        })
         return { status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }
       },
     })
@@ -277,7 +382,7 @@ describe("cast plugin", () => {
       const hooks = await plugin({ ...input, directory: dir, worktree: dir } as never, {
         embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
       })
-      await hooks.tool!.semantic_search_code.execute({ query: "session" }, { worktree: dir, directory: dir } as never)
+      await semanticSearchTool(hooks).execute({ query: "session" }, { worktree: dir, directory: dir } as never)
 
       expect(rejected).toBe(true)
     } finally {
@@ -294,13 +399,23 @@ describe("cast plugin", () => {
         return { read: async () => emptyReadyIndex(), write: async () => undefined }
       },
       createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
-      retrieve: async () => ({ status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }),
+      retrieve: async () => ({
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        results: [],
+        diagnostics: [],
+      }),
     })
-    const baseOptions = { cacheDir: "/cache", embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" } }
+    const baseOptions = {
+      cacheDir: "/cache",
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
+    }
 
     await plugin(input as never, baseOptions)
     await plugin(input as never, baseOptions)
-    await plugin(input as never, { ...baseOptions, embedding: { ...baseOptions.embedding, baseURL: "https://other.test/v1" } })
+    await plugin(input as never, {
+      ...baseOptions,
+      embedding: { ...baseOptions.embedding, baseURL: "https://other.test/v1" },
+    })
     await plugin(input as never, { ...baseOptions, embedding: { ...baseOptions.embedding, model: "other" } })
     await plugin(input as never, { ...baseOptions, embedding: { ...baseOptions.embedding, dimensions: 1024 } })
     await plugin(input as never, { ...baseOptions, maxChunkNonWhitespaceChars: 1000 })
@@ -315,9 +430,18 @@ describe("cast plugin", () => {
   test("dispose clears old refresh promise so later execution does not await it", async () => {
     let resolveRefresh: (() => void) | undefined
     const plugin = createCastPluginForTest({
-      createIndexer: () => ({ refresh: () => new Promise((resolve) => { resolveRefresh = () => resolve(emptyReadyIndex()) }) }),
+      createIndexer: () => ({
+        refresh: () =>
+          new Promise((resolve) => {
+            resolveRefresh = () => resolve(emptyReadyIndex())
+          }),
+      }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
-      retrieve: async () => ({ status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }),
+      retrieve: async () => ({
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        results: [],
+        diagnostics: [],
+      }),
     })
     const hooks = await plugin(input as never, {
       embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
@@ -325,7 +449,10 @@ describe("cast plugin", () => {
 
     await hooks.dispose?.()
     const result = await Promise.race([
-      hooks.tool!.semantic_search_code.execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never),
+      semanticSearchTool(hooks).execute({ query: "session" }, {
+        worktree: "/repo",
+        directory: "/repo",
+      } as never),
       new Promise((resolve) => setTimeout(() => resolve("timed out"), 50)),
     ])
 
@@ -343,4 +470,17 @@ function emptyReadyIndex() {
   })
   index.metadata.status = "ready"
   return index
+}
+
+function recordEventAndReturnIndex(events: string[], event: string) {
+  events.push(event)
+  return emptyReadyIndex()
+}
+
+function semanticSearchTool(hooks: Awaited<ReturnType<typeof castPlugin>>) {
+  const semanticSearchCode = hooks.tool?.semantic_search_code
+  if (!semanticSearchCode) {
+    throw new Error("semantic_search_code tool was not registered")
+  }
+  return semanticSearchCode
 }
