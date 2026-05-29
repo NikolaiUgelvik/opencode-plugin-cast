@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import { assignSymbolsToChunks, attachTopology, expandWithParentContext, extractSymbols } from "./topology.js"
-import {
-  assignSymbolsToChunks as entrypointAssignSymbolsToChunks,
-  attachTopology as entrypointAttachTopology,
-  expandWithParentContext as entrypointExpandWithParentContext,
-  extractSymbols as entrypointExtractSymbols,
-} from "./index.js"
 import type { ChunkRecord, SymbolRecord } from "./types.js"
 
 const base = {
@@ -18,13 +12,6 @@ const base = {
 } satisfies Partial<ChunkRecord>
 
 describe("topology", () => {
-  test("exports topology helpers from the package entrypoint", () => {
-    expect(entrypointExtractSymbols).toBe(extractSymbols)
-    expect(entrypointAssignSymbolsToChunks).toBe(assignSymbolsToChunks)
-    expect(entrypointAttachTopology).toBe(attachTopology)
-    expect(entrypointExpandWithParentContext).toBe(expandWithParentContext)
-  })
-
   test("links children to parent symbols and siblings", () => {
     const parent: SymbolRecord = { id: "sym:class:A", name: "A", kind: "class", filePath: "src/a.ts", range: { byteStart: 0, byteEnd: 40, lineStart: 1, lineEnd: 4 }, childSymbolIds: [] }
     const chunks = attachTopology(

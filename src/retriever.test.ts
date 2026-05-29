@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { retrieve } from "./retriever.js"
-import { retrieve as entrypointRetrieve } from "./index.js"
 import { createEmptyIndex } from "./store.js"
 
 describe("retrieve", () => {
-  test("exports retrieve from the package entrypoint", () => {
-    expect(entrypointRetrieve).toBe(retrieve)
-  })
-
   test("returns normal embedding results without HyDE above threshold", async () => {
     const index = createEmptyIndex({ projectId: "p", worktree: "/repo", cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
     index.metadata.status = "ready"

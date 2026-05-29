@@ -2,15 +2,10 @@ import { mkdtemp, rm, symlink, utimes } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
-import { createIndexer as createEntrypointIndexer } from "./index.js"
 import { createIndexer } from "./scanner.js"
 import { createEmptyIndex, createIndexStore } from "./store.js"
 
 describe("createIndexer", () => {
-  test("is exported from the package entrypoint", () => {
-    expect(createEntrypointIndexer).toBe(createIndexer)
-  })
-
   test("indexes changed files and removes deleted files", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
     try {

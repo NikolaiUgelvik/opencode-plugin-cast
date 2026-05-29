@@ -13,6 +13,13 @@ const input = {
 }
 
 describe("cast plugin", () => {
+  test("root module exposes only the default plugin", async () => {
+    const entrypoint = await import("./index.js")
+
+    expect(Object.keys(entrypoint)).toEqual(["default"])
+    expect(entrypoint.default).toBeFunction()
+  })
+
   test("registers semantic_search_code", async () => {
     const hooks = await castPlugin(input as never, {
       embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },

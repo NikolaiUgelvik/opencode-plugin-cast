@@ -1,16 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { castChunks, type SyntaxNode } from "./cast.js"
-import { castChunks as entrypointCastChunks } from "./index.js"
 
 function node(type: string, startIndex: number, endIndex: number, children: SyntaxNode[] = []): SyntaxNode {
   return { type, startIndex, endIndex, children }
 }
 
 describe("castChunks", () => {
-  test("exports castChunks from the package entrypoint", () => {
-    expect(entrypointCastChunks).toBe(castChunks)
-  })
-
   test("keeps small files as one file chunk", () => {
     const chunks = castChunks({
       filePath: "src/a.ts",

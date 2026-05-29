@@ -1,12 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import * as CastPlugin from "./index.js"
 import { createOpenAIClient } from "./openai.js"
 
 describe("createOpenAIClient", () => {
-  test("is exported from the package entrypoint", () => {
-    expect(CastPlugin.createOpenAIClient).toBe(createOpenAIClient)
-  })
-
   test("embeds text with OpenAI-compatible request shape", async () => {
     const calls: unknown[] = []
     const client = createOpenAIClient({
