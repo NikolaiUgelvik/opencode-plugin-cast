@@ -6,8 +6,10 @@ import type {
   ChunkRecord,
   HybridRetrievalMode,
   HybridRetrievalOptions,
+  RerankOptions,
   SearchInput,
   SearchOutput,
+  SearchResultRetrievalDetails,
 } from "./types.js"
 
 const encoder = new TextEncoder()
@@ -22,13 +24,17 @@ export async function retrieve(input: {
     maxContextChars: number
     hyde: { enabled: boolean; threshold: number }
     hybrid?: HybridRetrievalOptions
+    rerank?: RerankOptions
   }
   embed(text: string): Promise<number[]>
   generateHyde(query: string): Promise<string>
+  rerank?(query: string, documents: string[]): Promise<Array<{ index: number; score: number }>>
   readSource(filePath: string): Promise<string>
 }): Promise<SearchOutput> {
   const topK = input.input.topK ?? input.options.topK
   const maxContextChars = input.input.maxContextChars ?? input.options.maxContextChars
+  const rerank = input.options.rerank
+  const rankingTopK = rerank ? Math.max(topK * rerank.candidateMultiplier, topK) : topK
   const diagnostics = [
     ...input.index.metadata.diagnostics,
     ...Object.values(input.index.files)
@@ -58,8 +64,8 @@ export async function retrieve(input: {
   const candidateCount = Math.max(
     canUseHybrid && hybrid?.mode === "vector-prefilter"
       ? vectors.length
-      : topK * (canUseHybrid ? (hybrid?.vectorCandidateMultiplier ?? 1) : CANDIDATE_MULTIPLIER),
-    topK,
+      : rankingTopK * (canUseHybrid ? (hybrid?.vectorCandidateMultiplier ?? 1) : CANDIDATE_MULTIPLIER),
+    rankingTopK,
   )
   const initial = searchVectors(queryVector, vectors, candidateCount)
   const bestScore = initial[0]?.score
@@ -80,25 +86,46 @@ export async function retrieve(input: {
             diagnostics: [`HyDE failed: ${error instanceof Error ? error.message : String(error)}`],
           }))
       : { scored: initial, hydeUsed: false, diagnostics: [] }
-  const ranked = canUseHybrid
+  let ranked = canUseHybrid
     ? hybridResults({
         query: input.input.query,
         chunks,
         lexical: input.index.lexical,
-        topK,
+        topK: rankingTopK,
         vectorCandidates: hyde.scored,
         hybrid: hybrid as HybridRetrievalOptions,
       })
     : {
-        results: hyde.scored.slice(0, topK),
+        results: hyde.scored.slice(0, rankingTopK),
         retrieval: new Map(
           hyde.scored.map((result, index) => [result.id, { mode: "vector" as const, vectorRank: index + 1 }]),
         ),
       }
+  let rerankUsed = false
+  if (rerank && ranked.results.length > 0) {
+    try {
+      if (!input.rerank) {
+        throw new Error("rerank dependency unavailable")
+      }
+      ranked = {
+        ...ranked,
+        results: await rerankResults({
+          query: input.input.query,
+          results: ranked.results,
+          chunksById,
+          retrieval: ranked.retrieval,
+          rerank: input.rerank,
+        }),
+      }
+      rerankUsed = true
+    } catch (error) {
+      diagnostics.push(`Rerank failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const seenParentRanges = new Set<string>()
   const results = (
     await Promise.all(
-      ranked.results.flatMap(async (result) => {
+      ranked.results.slice(0, topK).flatMap(async (result) => {
         const chunk = chunksById[result.id]
         if (!chunk) {
           return []
@@ -155,7 +182,7 @@ export async function retrieve(input: {
     })
 
   return {
-    status: { ...input.index.metadata, hydeUsed: hyde.hydeUsed, bestScore },
+    status: { ...input.index.metadata, hydeUsed: hyde.hydeUsed, bestScore, rerankUsed },
     results,
     diagnostics: [...diagnostics, ...hyde.diagnostics],
   }
@@ -260,6 +287,45 @@ function includeScoreTies(results: RankedResult[], limit: number) {
     return results.slice()
   }
   return results.filter((result) => result.score >= cutoffScore)
+}
+
+async function rerankResults(input: {
+  query: string
+  results: RankedResult[]
+  chunksById: Record<string, ChunkRecord>
+  retrieval: Map<string, SearchResultRetrievalDetails>
+  rerank(query: string, documents: string[]): Promise<Array<{ index: number; score: number }>>
+}) {
+  const candidates = input.results.flatMap((result) => {
+    const chunk = input.chunksById[result.id]
+    return chunk ? [{ result, chunk }] : []
+  })
+  const reranked = await input.rerank(
+    input.query,
+    candidates.map(({ chunk }) => rerankDocument(chunk)),
+  )
+
+  return reranked.flatMap((rerankedResult, index) => {
+    const candidate = candidates[rerankedResult.index]
+    if (!candidate) {
+      return []
+    }
+    const existing = input.retrieval.get(candidate.result.id)
+    input.retrieval.set(candidate.result.id, {
+      ...(existing ?? { mode: "vector" }),
+      rerankRank: index + 1,
+      rerankScore: rerankedResult.score,
+    })
+    return [{ id: candidate.result.id, score: rerankedResult.score }]
+  })
+}
+
+function rerankDocument(chunk: ChunkRecord) {
+  return `${chunk.filePath}:${formatLineRange(chunk.range.lineStart, chunk.range.lineEnd)}\nkind: ${chunk.kind}\n${chunk.text}`
+}
+
+function formatLineRange(lineStart: number, lineEnd: number) {
+  return lineStart === lineEnd ? String(lineStart) : `${lineStart}-${lineEnd}`
 }
 
 function parentContext(input: {

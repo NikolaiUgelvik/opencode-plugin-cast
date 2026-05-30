@@ -11,6 +11,9 @@ export function createOpenAIClient(options: { fetch?: FetchLike } = {}) {
 
     generateHyde: (input: { baseURL: string; apiKey?: string; model: string; query: string }) =>
       generateHyde(request, input),
+
+    rerank: (input: { baseURL: string; apiKey?: string; model: string; query: string; documents: string[] }) =>
+      rerank(request, input),
   }
 }
 
@@ -76,6 +79,47 @@ async function generateHyde(
     throw new Error("HyDE response did not include choices[0].message.content")
   }
   return content.trim()
+}
+
+async function rerank(
+  request: FetchLike,
+  input: { baseURL: string; apiKey?: string; model: string; query: string; documents: string[] },
+) {
+  const response = await request(`${input.baseURL.replace(TRAILING_SLASHES_PATTERN, "")}/rerank`, {
+    method: "POST",
+    headers: buildHeaders(input.apiKey),
+    body: JSON.stringify({
+      model: input.model,
+      query: input.query,
+      documents: input.documents,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Rerank request failed: ${response.status}`)
+  }
+
+  const body = await response.json().catch(() => undefined)
+  const results =
+    typeof body === "object" && body !== null && "results" in body && Array.isArray(body.results)
+      ? body.results
+      : undefined
+  if (!results) {
+    throw new Error("Rerank response did not include results")
+  }
+
+  return results.map((result: unknown) => {
+    const index = typeof result === "object" && result !== null && "index" in result ? result.index : undefined
+    const score =
+      typeof result === "object" && result !== null && "relevance_score" in result ? result.relevance_score : undefined
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= input.documents.length) {
+      throw new Error("Rerank response included invalid result index")
+    }
+    if (typeof score !== "number" || Number.isNaN(score)) {
+      throw new Error("Rerank response included invalid relevance score")
+    }
+    return { index, score }
+  })
 }
 
 function buildHeaders(apiKey: string | undefined): Record<string, string> {

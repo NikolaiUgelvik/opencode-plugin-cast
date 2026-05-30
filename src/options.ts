@@ -9,6 +9,9 @@ const ApiConfig = z.object({
   model: z.string().optional(),
   dimensions: z.number().int().positive().optional(),
 })
+const RerankConfig = ApiConfig.omit({ dimensions: true }).extend({
+  candidateMultiplier: z.number().int().positive().optional(),
+})
 
 const HybridMode = z.enum(["parallel", "bm25-prefilter", "vector-prefilter"])
 const HybridOptions = z.object({
@@ -30,6 +33,7 @@ const OptionsSchema = z.object({
     enabled: z.boolean().optional(),
     threshold: z.number().min(-1).max(1).optional(),
   }).optional(),
+  rerank: RerankConfig.optional(),
   retrieval: RetrievalOptions.optional(),
   maxChunkNonWhitespaceChars: z.number().int().positive().optional(),
   maxContextChars: z.number().int().positive().optional(),
@@ -42,8 +46,10 @@ const OptionsSchema = z.object({
 const OptionFields = OptionsSchema.shape
 const ApiFields = ApiConfig.shape
 const HydeFields = OptionFields.hyde.unwrap().shape
+const RerankFields = OptionFields.rerank.unwrap().shape
 const HybridFields = RetrievalOptions.shape.hybrid.unwrap().shape
 const DEFAULT_HYDE_THRESHOLD = 0.35
+const DEFAULT_RERANK_CANDIDATE_MULTIPLIER = 4
 const DEFAULT_HYBRID_OPTIONS = {
   enabled: true,
   mode: "parallel" as const,
@@ -67,6 +73,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
   const parsed = {
     embedding: OptionFields.embedding.safeParse(inputRecord.success ? inputRecord.data.embedding : undefined),
     hyde: OptionFields.hyde.safeParse(inputRecord.success ? inputRecord.data.hyde : undefined),
+    rerank: OptionFields.rerank.safeParse(inputRecord.success ? inputRecord.data.rerank : undefined),
     retrieval: OptionFields.retrieval.safeParse(inputRecord.success ? inputRecord.data.retrieval : undefined),
     maxChunkNonWhitespaceChars: OptionFields.maxChunkNonWhitespaceChars.safeParse(
       inputRecord.success ? inputRecord.data.maxChunkNonWhitespaceChars : undefined,
@@ -86,6 +93,9 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
     hyde: parsed.hyde.success
       ? parsed.hyde.data
       : parseHydeConfig(inputRecord.success ? inputRecord.data.hyde : undefined),
+    rerank: parsed.rerank.success
+      ? parsed.rerank.data
+      : parseRerankConfig(inputRecord.success ? inputRecord.data.rerank : undefined),
     retrieval: parsed.retrieval.success
       ? parsed.retrieval.data
       : parseRetrievalOptions(inputRecord.success ? inputRecord.data.retrieval : undefined),
@@ -108,6 +118,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
   }
   const embeddingApiKey = raw.embedding?.apiKey ?? (raw.embedding?.apiKeyEnv ? env[raw.embedding.apiKeyEnv] : undefined)
   const hydeApiKey = raw.hyde?.apiKey ?? (raw.hyde?.apiKeyEnv ? env[raw.hyde.apiKeyEnv] : undefined) ?? embeddingApiKey
+  const rerankApiKey = raw.rerank?.apiKey ?? (raw.rerank?.apiKeyEnv ? env[raw.rerank.apiKeyEnv] : undefined)
   const embedding =
     raw.embedding?.baseURL && raw.embedding.model
       ? {
@@ -134,6 +145,15 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
       threshold: raw.hyde?.threshold ?? DEFAULT_HYDE_THRESHOLD,
       enabled: raw.hyde?.enabled ?? Boolean(raw.hyde?.model),
     },
+    rerank:
+      raw.rerank?.baseURL && raw.rerank.model
+        ? {
+            baseURL: raw.rerank.baseURL,
+            apiKey: rerankApiKey,
+            model: raw.rerank.model,
+            candidateMultiplier: raw.rerank.candidateMultiplier ?? DEFAULT_RERANK_CANDIDATE_MULTIPLIER,
+          }
+        : undefined,
     retrieval: {
       hybrid: {
         enabled: raw.retrieval?.hybrid?.enabled ?? DEFAULT_HYBRID_OPTIONS.enabled,
@@ -203,6 +223,26 @@ function parseHydeConfig(input: unknown) {
     dimensions: api?.dimensions,
     enabled: parsed.enabled.success ? parsed.enabled.data : undefined,
     threshold: parsed.threshold.success ? parsed.threshold.data : undefined,
+  }
+}
+
+function parseRerankConfig(input: unknown) {
+  const inputRecord = z.record(z.string(), z.unknown()).safeParse(input ?? {})
+  if (!inputRecord.success) {
+    return
+  }
+
+  const api = parseApiConfig(input)
+  const parsed = {
+    candidateMultiplier: RerankFields.candidateMultiplier.safeParse(inputRecord.data.candidateMultiplier),
+  }
+
+  return {
+    baseURL: api?.baseURL,
+    apiKey: api?.apiKey,
+    apiKeyEnv: api?.apiKeyEnv,
+    model: api?.model,
+    candidateMultiplier: parsed.candidateMultiplier.success ? parsed.candidateMultiplier.data : undefined,
   }
 }
 

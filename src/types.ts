@@ -19,6 +19,14 @@ export type HybridRetrievalOptions = {
   bm25Weight: number
 }
 
+export type RerankOptions = {
+  // biome-ignore lint/style/useNamingConvention: Matches the existing plugin option name.
+  baseURL: string
+  apiKey?: string
+  model: string
+  candidateMultiplier: number
+}
+
 export type LexicalIndex = {
   documentCount: number
   averageDocumentLength: number
@@ -36,6 +44,8 @@ export type SearchResultRetrievalDetails = {
   vectorRank?: number
   bm25Rank?: number
   bm25Score?: number
+  rerankRank?: number
+  rerankScore?: number
 }
 
 export type ChunkRecord = {
@@ -173,7 +183,7 @@ export type SearchResult = {
 }
 
 export type SearchOutput = {
-  status: IndexMetadata & { hydeUsed: boolean; bestScore?: number }
+  status: IndexMetadata & { hydeUsed: boolean; bestScore?: number; rerankUsed: boolean }
   results: SearchResult[]
   diagnostics: string[]
 }

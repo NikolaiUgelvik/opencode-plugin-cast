@@ -83,6 +83,87 @@ describe("createOpenAIClient", () => {
     })
   })
 
+  test("reranks documents with OpenRouter-compatible request shape", async () => {
+    const calls: unknown[] = []
+    const client = createOpenAIClient({
+      fetch: async (url, init) => {
+        calls.push({ url, init })
+        return Response.json({
+          results: [
+            { index: 1, relevance_score: 0.91 },
+            { index: 0, relevance_score: 0.12 },
+          ],
+        })
+      },
+    })
+
+    const results = await client.rerank({
+      baseURL: "https://openrouter.ai/api/v1/",
+      apiKey: "key",
+      model: "cohere/rerank-4-fast",
+      query: "find parser errors",
+      documents: ["a", "b"],
+    })
+
+    expect(results).toEqual([
+      { index: 1, score: 0.91 },
+      { index: 0, score: 0.12 },
+    ])
+    expect((calls[0] as { url: string }).url).toBe("https://openrouter.ai/api/v1/rerank")
+    expect((calls[0] as { init: RequestInit }).init.method).toBe("POST")
+    expect((calls[0] as { init: RequestInit }).init.headers).toEqual({
+      "content-type": "application/json",
+      authorization: "Bearer key",
+    })
+    expect(JSON.parse(String((calls[0] as { init: RequestInit }).init.body))).toEqual({
+      model: "cohere/rerank-4-fast",
+      query: "find parser errors",
+      documents: ["a", "b"],
+    })
+  })
+
+  test("throws clear errors for failed and malformed rerank responses", async () => {
+    await expect(
+      createOpenAIClient({ fetch: async () => new Response("nope", { status: 503 }) }).rerank({
+        baseURL: "https://openrouter.ai/api/v1",
+        model: "cohere/rerank-4-fast",
+        query: "hello",
+        documents: ["a"],
+      }),
+    ).rejects.toThrow("Rerank request failed: 503")
+
+    await expect(
+      createOpenAIClient({
+        fetch: async () => Response.json({ results: [{ index: 2, relevance_score: 0.5 }] }),
+      }).rerank({
+        baseURL: "https://openrouter.ai/api/v1",
+        model: "cohere/rerank-4-fast",
+        query: "hello",
+        documents: ["a"],
+      }),
+    ).rejects.toThrow("Rerank response included invalid result index")
+
+    await expect(
+      createOpenAIClient({
+        fetch: async () => Response.json({ results: [{ index: 0, relevance_score: "bad" }] }),
+      }).rerank({
+        baseURL: "https://openrouter.ai/api/v1",
+        model: "cohere/rerank-4-fast",
+        query: "hello",
+        documents: ["a"],
+      }),
+    ).rejects.toThrow("Rerank response included invalid relevance score")
+
+    await expect(
+      createOpenAIClient({ fetch: async () => new Response("not-json") }).rerank({
+        baseURL: "https://openrouter.ai/api/v1",
+        model: "cohere/rerank-4-fast",
+        query: "hello",
+        documents: ["a"],
+      }),
+    ).rejects.toThrow("Rerank response did not include results")
+  })
+
   test("omits authorization header when api key is missing", async () => {
     const headers: unknown[] = []
     const client = createOpenAIClient({

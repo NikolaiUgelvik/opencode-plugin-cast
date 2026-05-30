@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { buildLexicalIndex } from "./lexical.js"
 import { retrieve } from "./retriever.js"
 import { createEmptyIndex } from "./store.js"
-import type { CastIndex, HybridRetrievalOptions } from "./types.js"
+import type { CastIndex, HybridRetrievalOptions, RerankOptions } from "./types.js"
 
 const hybridOptions = (overrides: Partial<HybridRetrievalOptions> = {}): HybridRetrievalOptions => ({
   enabled: true,
@@ -12,6 +12,14 @@ const hybridOptions = (overrides: Partial<HybridRetrievalOptions> = {}): HybridR
   bm25CandidateMultiplier: 2,
   vectorWeight: 1,
   bm25Weight: 4,
+  ...overrides,
+})
+
+const rerankOptions = (overrides: Partial<RerankOptions> = {}): RerankOptions => ({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: "key",
+  model: "cohere/rerank-4-fast",
+  candidateMultiplier: 4,
   ...overrides,
 })
 
@@ -355,6 +363,124 @@ describe("retrieve", () => {
     expect(output.status.hydeUsed).toBe(true)
     expect(output.status.bestScore).toBeUndefined()
     expect(output.results).toEqual([])
+  })
+
+  test("reranks vector candidates after initial ranking", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+      text: "function first() {}",
+      nonWhitespaceChars: 18,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    index.chunks.c2 = {
+      id: "c2",
+      filePath: "b.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 20, lineStart: 1, lineEnd: 1 },
+      text: "function second() {}",
+      nonWhitespaceChars: 19,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0.9, Math.sqrt(0.19)],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "best match", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        rerank: rerankOptions({ candidateMultiplier: 2 }),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      rerank: async (_query, documents) => {
+        expect(documents).toEqual([
+          "a.ts:1\nkind: function\nfunction first() {}",
+          "b.ts:1\nkind: function\nfunction second() {}",
+        ])
+        return [
+          { index: 1, score: 0.99 },
+          { index: 0, score: 0.1 },
+        ]
+      },
+      readSource: async (filePath) => index.chunks[filePath === "a.ts" ? "c1" : "c2"].text,
+    })
+
+    expect(output.status.rerankUsed).toBe(true)
+    expect(output.results.map((result) => result.topology.chunk.id)).toEqual(["c2"])
+    expect(output.results[0].score).toBe(0.9)
+    expect(output.results[0].finalScore).toBe(0.99)
+    expect(output.results[0].retrieval).toMatchObject({
+      mode: "vector",
+      vectorRank: 2,
+      rerankRank: 1,
+      rerankScore: 0.99,
+    })
+  })
+
+  test("falls back to pre-rerank results with diagnostics when rerank fails", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+      text: "function first() {}",
+      nonWhitespaceChars: 18,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "best match", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        rerank: rerankOptions(),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      rerank: async () => {
+        throw new Error("provider unavailable")
+      },
+      readSource: async () => "function first() {}",
+    })
+
+    expect(output.status.rerankUsed).toBe(false)
+    expect(output.results[0].topology.chunk.id).toBe("c1")
+    expect(output.results[0].finalScore).toBe(1)
+    expect(output.results[0].retrieval).toMatchObject({ mode: "vector", vectorRank: 1 })
+    expect(output.results[0].retrieval?.rerankRank).toBeUndefined()
+    expect(output.diagnostics.at(-1)).toBe("Rerank failed: provider unavailable")
   })
 
   test("uses active score when HyDE promotes a result outside initial candidates", async () => {

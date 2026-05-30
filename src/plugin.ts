@@ -102,7 +102,7 @@ This tool searches syntax-aware code chunks such as functions, classes, methods,
             const output = await (dependencies.retrieve ?? retrieve)({
               index: await store.read(),
               input: args,
-              options: { ...options, hybrid: options.retrieval.hybrid },
+              options: { ...options, hybrid: options.retrieval.hybrid, rerank: options.rerank },
               embed: (text) => client.embed({ ...embedding, input: text }),
               generateHyde: (query) =>
                 options.hyde.baseURL && options.hyde.model
@@ -113,13 +113,27 @@ This tool searches syntax-aware code chunks such as functions, classes, methods,
                       query,
                     })
                   : Promise.reject(new Error("HyDE is not configured")),
+              rerank: (query, documents) =>
+                options.rerank
+                  ? client.rerank({
+                      baseURL: options.rerank.baseURL,
+                      apiKey: options.rerank.apiKey,
+                      model: options.rerank.model,
+                      query,
+                      documents,
+                    })
+                  : Promise.reject(new Error("Rerank is not configured")),
               readSource: async (filePath) => Bun.file(await resolveWorktreePath(input.worktree, filePath)).text(),
             })
 
             return {
               title: `Semantic code search: ${args.query}`,
               output: JSON.stringify(output, null, 2),
-              metadata: { hydeUsed: output.status.hydeUsed, resultCount: output.results.length },
+              metadata: {
+                hydeUsed: output.status.hydeUsed,
+                rerankUsed: output.status.rerankUsed,
+                resultCount: output.results.length,
+              },
             }
           },
         }),

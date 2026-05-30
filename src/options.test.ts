@@ -79,6 +79,86 @@ describe("parseOptions", () => {
     })
   })
 
+  test("parses configured rerank options and resolves api key from env", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "embedding-key",
+          model: "text-embedding-3-small",
+        },
+        rerank: {
+          baseURL: "https://openrouter.ai/api/v1",
+          apiKeyEnv: "OPENROUTER_API_KEY",
+          model: "cohere/rerank-4-fast",
+          candidateMultiplier: 6,
+        },
+      },
+      { OPENROUTER_API_KEY: "rerank-key" },
+    )
+
+    expect(options.rerank).toEqual({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: "rerank-key",
+      model: "cohere/rerank-4-fast",
+      candidateMultiplier: 6,
+    })
+  })
+
+  test("defaults rerank candidate multiplier when rerank is configured", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "embedding-key",
+          model: "text-embedding-3-small",
+        },
+        rerank: {
+          baseURL: "https://openrouter.ai/api/v1",
+          apiKey: "rerank-key",
+          model: "cohere/rerank-4-fast",
+        },
+      },
+      {},
+    )
+
+    expect(options.rerank).toEqual({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey: "rerank-key",
+      model: "cohere/rerank-4-fast",
+      candidateMultiplier: 4,
+    })
+  })
+
+  test("reports invalid rerank fields without disabling valid embedding config", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "embedding-key",
+          model: "text-embedding-3-small",
+        },
+        rerank: {
+          baseURL: "not a url",
+          model: 42,
+          candidateMultiplier: 0,
+        },
+      },
+      {},
+    )
+
+    expect(options.embedding).toEqual({
+      baseURL: "https://example.test/v1",
+      apiKey: "embedding-key",
+      model: "text-embedding-3-small",
+      dimensions: undefined,
+    })
+    expect(options.rerank).toBeUndefined()
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("rerank.baseURL:"))).toBe(true)
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("rerank.model:"))).toBe(true)
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("rerank.candidateMultiplier:"))).toBe(true)
+  })
+
   test("reports invalid hybrid retrieval options", () => {
     const options = parseOptions(
       {

@@ -163,7 +163,7 @@ describe("cast plugin", () => {
         throw new Error("expected object tool result")
       }
       expect(result.title).toBe("Semantic code search: session")
-      expect(result.metadata).toEqual({ hydeUsed: true, resultCount: 1 })
+      expect(result.metadata).toEqual({ hydeUsed: true, rerankUsed: false, resultCount: 1 })
       expect(JSON.parse(result.output).results[0].filePath).toBe("code.ts")
       expect(
         fetchCalls.some(
@@ -199,7 +199,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
         results: [],
         diagnostics: [],
       }),
@@ -234,7 +234,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
         results: [],
         diagnostics: [],
       }),
@@ -287,7 +287,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
         results: [],
         diagnostics: [],
       }),
@@ -331,7 +331,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
         results: [],
         diagnostics: [],
       }),
@@ -349,17 +349,27 @@ describe("cast plugin", () => {
     if (typeof result === "string") {
       throw new Error("expected object tool result")
     }
-    expect(result.metadata).toEqual({ hydeUsed: false, resultCount: 0 })
+    expect(result.metadata).toEqual({ hydeUsed: false, rerankUsed: false, resultCount: 0 })
   })
 
   test("retrieve wiring passes store index, args, OpenAI calls, and worktree source reader", async () => {
     const index = emptyReadyIndex()
-    const seen: { input?: unknown; index?: unknown; embed?: number[]; hyde?: string; source?: string } = {}
+    const seen: {
+      input?: unknown
+      index?: unknown
+      embed?: number[]
+      hyde?: string
+      rerank?: unknown
+      source?: string
+    } = {}
     const plugin = createCastPluginForTest({
       fetch: async (url, init) => {
         const body = JSON.parse(String(init.body))
         if (url.endsWith("/chat/completions")) {
           return Response.json({ choices: [{ message: { content: `hyde:${body.messages[1].content}` } }] })
+        }
+        if (url.endsWith("/rerank")) {
+          return Response.json({ results: [{ index: 0, relevance_score: 0.77 }] })
         }
         return Response.json({ data: [{ embedding: String(body.input).startsWith("hyde:") ? [2] : [1] }] })
       },
@@ -370,9 +380,13 @@ describe("cast plugin", () => {
         seen.input = input.input
         seen.embed = await input.embed("query text")
         seen.hyde = await input.generateHyde("query text")
+        seen.rerank = {
+          options: input.options.rerank,
+          results: await input.rerank?.("query text", ["document text"]),
+        }
         seen.source = await input.readSource("nested/source.ts")
         return {
-          status: { ...index.metadata, hydeUsed: true },
+          status: { ...index.metadata, hydeUsed: true, rerankUsed: true },
           results: [{ filePath: "nested/source.ts" } as never],
           diagnostics: [],
         }
@@ -385,6 +399,7 @@ describe("cast plugin", () => {
       const hooks = await plugin({ ...input, directory: dir, worktree: dir } as never, {
         embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
         hyde: { model: "hyde", enabled: true },
+        rerank: { baseURL: "https://openrouter.ai/api/v1", apiKey: "rerank-key", model: "cohere/rerank-4-fast" },
       })
       await semanticSearchTool(hooks).execute(
         { query: "query text", topK: 3, maxContextChars: 50, includeParents: true, paths: ["nested"] },
@@ -401,6 +416,15 @@ describe("cast plugin", () => {
       })
       expect(seen.embed).toEqual([1])
       expect(seen.hyde).toBe("hyde:query text")
+      expect(seen.rerank).toEqual({
+        options: {
+          baseURL: "https://openrouter.ai/api/v1",
+          apiKey: "rerank-key",
+          model: "cohere/rerank-4-fast",
+          candidateMultiplier: 4,
+        },
+        results: [{ index: 0, score: 0.77 }],
+      })
       expect(seen.source).toBe("source text")
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -416,7 +440,7 @@ describe("cast plugin", () => {
       retrieve: async (input) => {
         hybrid = input.options.hybrid
         return {
-          status: { ...index.metadata, hydeUsed: false },
+          status: { ...index.metadata, hydeUsed: false, rerankUsed: false },
           results: [],
           diagnostics: [],
         }
@@ -464,7 +488,11 @@ describe("cast plugin", () => {
         await input.readSource(outsideRelativePath).catch(() => {
           rejected = true
         })
-        return { status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }
+        return {
+          status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+          results: [],
+          diagnostics: [],
+        }
       },
     })
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-plugin-"))
@@ -495,7 +523,11 @@ describe("cast plugin", () => {
         await input.readSource("secret-link.ts").catch(() => {
           rejected = true
         })
-        return { status: { ...emptyReadyIndex().metadata, hydeUsed: false }, results: [], diagnostics: [] }
+        return {
+          status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+          results: [],
+          diagnostics: [],
+        }
       },
     })
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-plugin-"))
@@ -524,7 +556,7 @@ describe("cast plugin", () => {
       },
       createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
         results: [],
         diagnostics: [],
       }),
@@ -562,7 +594,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false },
+        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
         results: [],
         diagnostics: [],
       }),

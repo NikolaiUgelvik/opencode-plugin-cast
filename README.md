@@ -78,6 +78,35 @@ OpenRouter can be used as the HyDE chat provider while embeddings come from a ve
 }
 ```
 
+## OpenRouter Rerank Example
+
+OpenRouter's rerank endpoint can be used to reorder the candidates found by vector and hybrid retrieval. Reranking is enabled by default when `rerank.baseURL` and `rerank.model` are configured. If the rerank request fails, `semantic_search_code` falls back to the current retrieval order and includes a diagnostic.
+
+```json
+{
+  "plugin": [
+    [
+      "opencode-plugin-cast",
+      {
+        "embedding": {
+          "baseURL": "https://api.openai.com/v1",
+          "apiKeyEnv": "OPENAI_API_KEY",
+          "model": "text-embedding-3-small"
+        },
+        "rerank": {
+          "baseURL": "https://openrouter.ai/api/v1",
+          "apiKeyEnv": "OPENROUTER_API_KEY",
+          "model": "cohere/rerank-4-fast",
+          "candidateMultiplier": 4
+        }
+      }
+    ]
+  ]
+}
+```
+
+`candidateMultiplier` controls how many already-ranked candidates are sent to the reranker: `topK * candidateMultiplier`. The default is `4`.
+
 ## Tool
 
 `semantic_search_code` inputs:
@@ -159,6 +188,8 @@ Configure hybrid retrieval under `retrieval.hybrid`:
 ```
 
 `mode` can be `parallel`, `bm25-prefilter`, or `vector-prefilter`. `parallel` searches both candidate sets before RRF. `bm25-prefilter` keeps BM25 candidates in fusion while limiting vector-side contributions to overlapping candidates, and `vector-prefilter` ranks BM25 within the vector candidate pool. When HyDE is triggered, it remains on the semantic/vector side while BM25 still participates in fusion.
+
+When reranking is configured, the plugin first finds candidates through the normal vector, HyDE, and hybrid pipeline, then sends a larger candidate set to the reranker before returning the final `topK` results. Reranker documents include the chunk path, line range, kind, and chunk text, but not expanded parent context.
 
 Lexical stats are persisted in the index cache. Older or missing cache data degrades to vector-only retrieval with a diagnostic until the index is refreshed or rebuilt.
 
