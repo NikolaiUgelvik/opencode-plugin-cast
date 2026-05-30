@@ -36,6 +36,12 @@ const entries: ParserEntry[] = [
         .default,
   },
   {
+    id: "php",
+    extensions: [".php", ".phtml", ".php3", ".php4", ".php5"],
+    wasm: async () =>
+      (await import("tree-sitter-php/tree-sitter-php.wasm" as string, { with: { type: "wasm" } })).default,
+  },
+  {
     id: "python",
     extensions: [".py"],
     wasm: async () =>

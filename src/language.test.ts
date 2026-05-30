@@ -6,6 +6,8 @@ describe("language registry", () => {
     expect(languageForPath("src/app.ts")?.id).toBe("typescript")
     expect(languageForPath("src/app.tsx")?.id).toBe("tsx")
     expect(languageForPath("bin/start.sh")?.id).toBe("bash")
+    expect(languageForPath("public/index.php")?.id).toBe("php")
+    expect(languageForPath("views/layout.phtml")?.id).toBe("php")
     expect(languageForPath("/home/me/.bashrc")?.id).toBe("bash")
     expect(languageForPath("README.md")).toBeUndefined()
   })
@@ -46,6 +48,15 @@ describe("language registry", () => {
     expect(parsed.root?.type).toBe("program")
     expect(parsed.root?.startIndex).toBe(0)
     expect(parsed.root?.endIndex).toBe(23)
+    expect(parsed.root?.children.length).toBeGreaterThan(0)
+  })
+
+  test("parses PHP source into the shared syntax node shape", async () => {
+    const parsed = await parseSource("public/index.php", "<?php function value() { return 1; }\n")
+
+    expect(parsed.language).toBe("php")
+    expect(parsed.root?.type).toBe("program")
+    expect(parsed.root?.startIndex).toBe(0)
     expect(parsed.root?.children.length).toBeGreaterThan(0)
   })
 
