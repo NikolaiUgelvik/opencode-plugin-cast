@@ -11,11 +11,21 @@ import type { CastIndex, ChunkingOptions } from "./types.js"
 
 type Store = { read(): Promise<CastIndex>; write(index: CastIndex): Promise<void> }
 type GitignoreMatcher = { base: string; matcher: Ignore }
+const BINARY_SAMPLE_BYTES = Number("16") * Number("1024")
+const BYTE_NUL = 0
+const BYTE_BACKSPACE = 8
+const BYTE_TAB = 9
+const BYTE_LINE_FEED = 10
+const BYTE_FORM_FEED = 12
+const BYTE_CARRIAGE_RETURN = 13
+const CONTROL_BYTE_LIMIT = 32
+const BINARY_CONTROL_RATIO = 0.3
 
 export function createIndexer(input: {
   worktree: string
   options: {
     maxChunkNonWhitespaceChars: number
+    maxFileBytes: number
     includeGlobs: string[]
     excludeGlobs: string[]
     topK: number
@@ -37,9 +47,16 @@ export function createIndexer(input: {
       const nextFiles: CastIndex["files"] = {}
       const nextChunks: CastIndex["chunks"] = {}
       const nextSymbols: CastIndex["symbols"] = {}
+      const metadataDiagnostics: string[] = []
 
       for (const relativePath of files) {
         const absolutePath = path.join(input.worktree, relativePath)
+        const file = Bun.file(absolutePath)
+        const skipDiagnostic = await skipFileDiagnostic(relativePath, file, input.options.maxFileBytes)
+        if (skipDiagnostic) {
+          metadataDiagnostics.push(skipDiagnostic)
+          continue
+        }
         const currentFingerprint = await fingerprint(absolutePath)
         const previousFile = index.files[relativePath]
         if (canReuseFile(index, previousFile, relativePath, currentFingerprint, canReuseExistingRecords)) {
@@ -81,7 +98,7 @@ export function createIndexer(input: {
           : []
         const symbolsById = Object.fromEntries(symbols.map((symbol) => [symbol.id, symbol]))
         const chunks = attachTopology(assignSymbolsToChunks(rawChunks, symbolsById), symbolsById)
-        const diagnostics = "diagnostic" in parsed ? [String(parsed.diagnostic)] : []
+        const fileDiagnostics = "diagnostic" in parsed ? [String(parsed.diagnostic)] : []
 
         for (const chunk of chunks) {
           const embedded = await input
@@ -89,7 +106,7 @@ export function createIndexer(input: {
             .then((embedding) => ({ embedding }))
             .catch((error) => ({ embeddingError: error instanceof Error ? error.message : String(error) }))
           if ("embeddingError" in embedded) {
-            diagnostics.push(`embedding failed: ${embedded.embeddingError}`)
+            fileDiagnostics.push(`embedding failed: ${embedded.embeddingError}`)
           }
           nextChunks[chunk.id] = { ...chunk, ...embedded }
         }
@@ -101,7 +118,7 @@ export function createIndexer(input: {
           language: parsed.language,
           fingerprint: currentFingerprint,
           chunkIds: chunks.map((chunk) => chunk.id),
-          diagnostics,
+          diagnostics: fileDiagnostics,
         }
       }
 
@@ -114,12 +131,50 @@ export function createIndexer(input: {
       index.metadata.worktree = input.worktree
       index.metadata.maxChunkNonWhitespaceChars = input.options.maxChunkNonWhitespaceChars
       index.metadata.chunking = input.options.chunking
+      index.metadata.diagnostics = metadataDiagnostics
       index.metadata.status = "ready"
       index.metadata.updatedAt = Date.now()
       await input.store.write(index)
       return index
     },
   }
+}
+
+async function skipFileDiagnostic(
+  relativePath: string,
+  file: { size: number; slice(start?: number, end?: number): Blob },
+  maxFileBytes: number,
+) {
+  if (file.size > maxFileBytes) {
+    return `${relativePath}: skipped file over maxFileBytes (${file.size} > ${maxFileBytes})`
+  }
+  const sample = new Uint8Array(await file.slice(0, Math.min(file.size, BINARY_SAMPLE_BYTES)).arrayBuffer())
+  if (isProbablyBinary(sample)) {
+    return `${relativePath}: skipped binary file`
+  }
+}
+
+function isProbablyBinary(bytes: Uint8Array) {
+  if (bytes.length === 0) {
+    return false
+  }
+  let suspicious = 0
+  for (const byte of bytes) {
+    if (byte === BYTE_NUL) {
+      return true
+    }
+    if (
+      byte < CONTROL_BYTE_LIMIT &&
+      byte !== BYTE_BACKSPACE &&
+      byte !== BYTE_TAB &&
+      byte !== BYTE_LINE_FEED &&
+      byte !== BYTE_FORM_FEED &&
+      byte !== BYTE_CARRIAGE_RETURN
+    ) {
+      suspicious++
+    }
+  }
+  return suspicious / bytes.length > BINARY_CONTROL_RATIO
 }
 
 function canReuseFile(

@@ -81,6 +81,7 @@ export function createCastPluginForTest(
             worktree: input.worktree,
             options: {
               maxChunkNonWhitespaceChars: options.maxChunkNonWhitespaceChars,
+              maxFileBytes: options.maxFileBytes,
               includeGlobs: options.includeGlobs,
               excludeGlobs: options.excludeGlobs,
               topK: options.topK,

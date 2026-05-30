@@ -34,7 +34,15 @@ describe("parseOptions", () => {
     })
     expect(options.maxChunkNonWhitespaceChars).toBe(2000)
     expect(options.maxContextChars).toBe(12_000)
+    expect(options.maxFileBytes).toBe(2 * 1024 * 1024)
     expect(options.topK).toBe(5)
+    expect(options.includeGlobs).toEqual(["**/*"])
+    expect(options.excludeGlobs).toEqual(
+      expect.arrayContaining([
+        "**/*.{png,jpg,jpeg,gif,webp,ico,pdf,zip,gz,tgz,tar,7z,mp4,mov,mp3,woff,woff2,ttf,eot}",
+        "**/bun.lock",
+      ]),
+    )
     expect(options.retrieval.hybrid).toEqual({
       enabled: true,
       mode: "parallel",
@@ -453,6 +461,41 @@ describe("parseOptions", () => {
     expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("topK:"))).toBe(true)
     expect(options.diagnostics).not.toContain("embedding.baseURL is required")
     expect(options.diagnostics).not.toContain("embedding.model is required")
+  })
+
+  test("parses configured file scanning limits", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        maxFileBytes: 4096,
+        excludeGlobs: ["**/*.generated.ts"],
+      },
+      {},
+    )
+
+    expect(options.maxFileBytes).toBe(4096)
+    expect(options.excludeGlobs).toEqual(["**/*.generated.ts"])
+  })
+
+  test("reports invalid maxFileBytes and falls back to default", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        maxFileBytes: 0,
+      },
+      {},
+    )
+
+    expect(options.maxFileBytes).toBe(2 * 1024 * 1024)
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("maxFileBytes:"))).toBe(true)
   })
 
   test("preserves valid embedding fields when dimensions is invalid", () => {

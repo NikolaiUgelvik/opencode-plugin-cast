@@ -7,14 +7,22 @@ import { createEmptyIndex, createIndexStore } from "./store.js"
 import type { ChunkingOptions } from "./types.js"
 
 const DEFAULT_CHUNKING_OPTIONS: ChunkingOptions = { overlap: 0, expansion: false, minSemanticNonWhitespaceChars: 8 }
+const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024
 type CreateIndexerInput = Parameters<typeof createScannerIndexer>[0]
 type TestCreateIndexerInput = Omit<CreateIndexerInput, "options"> & {
-  options: Omit<CreateIndexerInput["options"], "chunking"> & { chunking?: ChunkingOptions }
+  options: Omit<CreateIndexerInput["options"], "chunking" | "maxFileBytes"> & {
+    chunking?: ChunkingOptions
+    maxFileBytes?: number
+  }
 }
 const createIndexer = (input: TestCreateIndexerInput) =>
   createScannerIndexer({
     ...input,
-    options: { ...input.options, chunking: input.options.chunking ?? DEFAULT_CHUNKING_OPTIONS },
+    options: {
+      ...input.options,
+      chunking: input.options.chunking ?? DEFAULT_CHUNKING_OPTIONS,
+      maxFileBytes: input.options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
+    },
   })
 
 describe("createIndexer", () => {
@@ -138,6 +146,86 @@ describe("createIndexer", () => {
       await indexer.refresh()
 
       expect(Object.keys(index.files).sort()).toEqual(["kept.ts", "subdir/kept.ts"])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("skips binary files and reports a diagnostic", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    try {
+      await Bun.write(path.join(dir, "source.ts"), "export const source = true\n")
+      await Bun.write(path.join(dir, "image.bin"), new Uint8Array([0, 159, 146, 150]))
+      let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
+      const parsedPaths: string[] = []
+      const indexer = createIndexer({
+        worktree: dir,
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          maxFileBytes: 1024,
+          includeGlobs: ["**/*"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
+        store: {
+          read: async () => index,
+          write: async (next) => {
+            index = next
+          },
+        },
+        parse: async (filePath) => {
+          parsedPaths.push(path.basename(filePath))
+          return { language: "typescript", root: undefined }
+        },
+        embed: async () => [1, 0],
+      })
+
+      await indexer.refresh()
+
+      expect(Object.keys(index.files)).toEqual(["source.ts"])
+      expect(parsedPaths).toEqual(["source.ts"])
+      expect(index.metadata.diagnostics).toContain("image.bin: skipped binary file")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("skips files over maxFileBytes and reports a diagnostic", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    try {
+      await Bun.write(path.join(dir, "source.ts"), "export const source = true\n")
+      await Bun.write(path.join(dir, "large.txt"), "x".repeat(200))
+      let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
+      const parsedPaths: string[] = []
+      const indexer = createIndexer({
+        worktree: dir,
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          maxFileBytes: 100,
+          includeGlobs: ["**/*"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
+        store: {
+          read: async () => index,
+          write: async (next) => {
+            index = next
+          },
+        },
+        parse: async (filePath) => {
+          parsedPaths.push(path.basename(filePath))
+          return { language: "typescript", root: undefined }
+        },
+        embed: async () => [1, 0],
+      })
+
+      await indexer.refresh()
+
+      expect(Object.keys(index.files)).toEqual(["source.ts"])
+      expect(parsedPaths).toEqual(["source.ts"])
+      expect(index.metadata.diagnostics).toContain("large.txt: skipped file over maxFileBytes (200 > 100)")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

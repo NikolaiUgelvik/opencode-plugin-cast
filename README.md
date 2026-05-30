@@ -115,7 +115,7 @@ OpenRouter's rerank endpoint can be used to reorder the candidates found by vect
 - `maxContextChars`: optional context budget. Defaults to `12000`.
 - `includeParents`: optional parent context toggle. Defaults to `true`.
 - `refresh`: optional forced index refresh before searching.
-- `paths`: optional path filters. Entries can be exact file paths or directory prefixes.
+- `paths`: optional path filters. Entries can be exact file paths, directory prefixes, or glob patterns.
 
 Each search result includes labeled topology entries that keep chunk IDs actionable while making parent, child, sibling, and symbol relationships readable:
 
@@ -195,6 +195,18 @@ Lexical stats are persisted in the index cache. Older or missing cache data degr
 ## Cache
 
 The index is stored outside the repository. The default cache directory is `${XDG_CACHE_HOME:-~/.cache}/opencode/cast`.
+
+By default the indexer scans regular, non-gitignored worktree files, skips generated/build directories such as `.git`, `node_modules`, `dist`, `build`, and `.cache`, excludes common binary/archive/lockfile patterns, skips probable binary files, and skips files larger than `maxFileBytes` (`2097152`, 2 MiB). Skipped binary and oversized files are reported in index diagnostics.
+
+Configure file scanning with plugin options:
+
+```json
+{
+  "includeGlobs": ["src/**/*"],
+  "excludeGlobs": ["**/*.generated.ts", "**/*.map"],
+  "maxFileBytes": 2097152
+}
+```
 
 Override the cache location with plugin config:
 

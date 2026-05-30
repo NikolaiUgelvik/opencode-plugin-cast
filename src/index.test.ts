@@ -511,8 +511,9 @@ describe("cast plugin", () => {
 
     expect(indexerOptions).toEqual({
       maxChunkNonWhitespaceChars: 2000,
+      maxFileBytes: 2 * 1024 * 1024,
       includeGlobs: ["**/*"],
-      excludeGlobs: [],
+      excludeGlobs: expect.arrayContaining(["**/bun.lock"]),
       topK: 5,
       maxContextChars: 12_000,
       chunking: { overlap: 2, expansion: true, minSemanticNonWhitespaceChars: 16 },

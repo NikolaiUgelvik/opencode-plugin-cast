@@ -44,6 +44,7 @@ const OptionsSchema = z.object({
   retrieval: RetrievalOptions.optional(),
   chunking: ChunkingOptionsSchema.optional(),
   maxChunkNonWhitespaceChars: z.number().int().positive().optional(),
+  maxFileBytes: z.number().int().positive().optional(),
   maxContextChars: z.number().int().positive().optional(),
   topK: z.number().int().positive().optional(),
   cacheDir: z.string().optional(),
@@ -73,9 +74,21 @@ const DEFAULT_CHUNKING_OPTIONS: ChunkingOptions = {
   expansion: false,
   minSemanticNonWhitespaceChars: 8,
 }
+const KIB = Number("1024")
+const MIB = KIB * KIB
 const DEFAULT_MAX_CHUNK_NON_WHITESPACE_CHARS = 2000
+const DEFAULT_MAX_FILE_BYTES = Number("2") * MIB
 const DEFAULT_MAX_CONTEXT_CHARS = 12_000
 const DEFAULT_TOP_K = 5
+const DEFAULT_EXCLUDE_GLOBS = [
+  "**/*.{png,jpg,jpeg,gif,webp,ico,pdf,zip,gz,tgz,tar,7z,mp4,mov,mp3,woff,woff2,ttf,eot}",
+  "**/bun.lock",
+  "**/package-lock.json",
+  "**/pnpm-lock.yaml",
+  "**/yarn.lock",
+  "**/*.min.js",
+  "**/*.map",
+]
 
 export type CastPluginOptions = ReturnType<typeof parseOptions>
 
@@ -93,6 +106,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
     maxChunkNonWhitespaceChars: OptionFields.maxChunkNonWhitespaceChars.safeParse(
       inputRecord.success ? inputRecord.data.maxChunkNonWhitespaceChars : undefined,
     ),
+    maxFileBytes: OptionFields.maxFileBytes.safeParse(inputRecord.success ? inputRecord.data.maxFileBytes : undefined),
     maxContextChars: OptionFields.maxContextChars.safeParse(
       inputRecord.success ? inputRecord.data.maxContextChars : undefined,
     ),
@@ -120,6 +134,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
     maxChunkNonWhitespaceChars: parsed.maxChunkNonWhitespaceChars.success
       ? parsed.maxChunkNonWhitespaceChars.data
       : undefined,
+    maxFileBytes: parsed.maxFileBytes.success ? parsed.maxFileBytes.data : undefined,
     maxContextChars: parsed.maxContextChars.success ? parsed.maxContextChars.data : undefined,
     topK: parsed.topK.success ? parsed.topK.data : undefined,
     cacheDir: parsed.cacheDir.success ? parsed.cacheDir.data : undefined,
@@ -197,6 +212,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
         raw.chunking?.minSemanticNonWhitespaceChars ?? DEFAULT_CHUNKING_OPTIONS.minSemanticNonWhitespaceChars,
     },
     maxChunkNonWhitespaceChars: raw.maxChunkNonWhitespaceChars ?? DEFAULT_MAX_CHUNK_NON_WHITESPACE_CHARS,
+    maxFileBytes: raw.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES,
     maxContextChars: raw.maxContextChars ?? DEFAULT_MAX_CONTEXT_CHARS,
     topK: raw.topK ?? DEFAULT_TOP_K,
     cacheDir:
@@ -204,7 +220,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
       env.OPENCODE_CAST_CACHE_DIR ??
       path.join(env.XDG_CACHE_HOME ?? path.join(env.HOME ?? process.cwd(), ".cache"), "opencode", "cast"),
     includeGlobs: raw.includeGlobs ?? ["**/*"],
-    excludeGlobs: raw.excludeGlobs ?? [],
+    excludeGlobs: raw.excludeGlobs ?? DEFAULT_EXCLUDE_GLOBS,
     diagnostics,
   }
 }
