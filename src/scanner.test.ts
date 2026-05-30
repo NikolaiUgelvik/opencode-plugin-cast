@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite"
 import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, symlink, utimes } from "node:fs/promises"
 import os from "node:os"
@@ -143,6 +144,78 @@ describe("createIndexer", () => {
       expect(embedCalls).toBe(2)
       expect(Object.values(index.chunks)[0].embedding).toEqual([1, 0])
       expect(Object.values(index.chunks)[0].embeddingError).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  test("reprocesses a resumed completed file when chunk text cannot be reconstructed", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      const sourcePath = path.join(dir, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "export const a = 1\n")
+      let parseCalls = 0
+      let embedCalls = 0
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }) as ResumableStore
+      const originalWriteFileResult = store.writeFileResult.bind(store)
+      let fileWrites = 0
+      store.writeFileResult = async (runId, fileResult) => {
+        await originalWriteFileResult(runId, fileResult)
+        fileWrites++
+        if (fileWrites === 1) {
+          throw new Error("simulated crash after completed file")
+        }
+      }
+      const options = {
+        maxChunkNonWhitespaceChars: 2000,
+        includeGlobs: ["**/*.ts"],
+        excludeGlobs: [],
+        topK: 5,
+        maxContextChars: 12_000,
+      }
+      const makeIndexer = () =>
+        createIndexer({
+          worktree: dir,
+          options,
+          store,
+          parse: async () => {
+            parseCalls++
+            return { language: "typescript", root: undefined }
+          },
+          embed: async () => {
+            embedCalls++
+            return [1, 0]
+          },
+        })
+
+      await expect(makeIndexer().refresh()).rejects.toThrow("simulated crash after completed file")
+      store.writeFileResult = originalWriteFileResult
+      const db = new Database(path.join(cacheDir, "key", "index.sqlite"))
+      try {
+        const run = db.query("select id, metadata_json as metadataJson from runs where status = 'indexing'").get() as {
+          id: string
+          metadataJson: string
+        }
+        const metadata = JSON.parse(run.metadataJson)
+        db.run("update runs set metadata_json = ? where id = ?", [
+          JSON.stringify({ ...metadata, worktree: path.join(dir, "missing") }),
+          run.id,
+        ])
+      } finally {
+        db.close()
+      }
+
+      const index = await makeIndexer().refresh()
+
+      expect(parseCalls).toBe(2)
+      expect(embedCalls).toBe(2)
+      expect(Object.values(index.chunks)[0].text).toBe("export const a = 1\n")
+      expect(
+        (await createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }).read()).metadata.status,
+      ).toBe("ready")
     } finally {
       await rm(dir, { recursive: true, force: true })
       await rm(cacheDir, { recursive: true, force: true })
@@ -507,6 +580,67 @@ describe("createIndexer", () => {
       expect(index.symbols).toEqual(previousSymbols)
     } finally {
       await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("reprocesses an active index file when reused chunk text is empty", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      await Bun.write(path.join(dir, "a.ts"), "export const a = 1\n")
+      let parseCalls = 0
+      let embedCalls = 0
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 })
+      const options = {
+        maxChunkNonWhitespaceChars: 2000,
+        includeGlobs: ["**/*.ts"],
+        excludeGlobs: [],
+        topK: 5,
+        maxContextChars: 12_000,
+      }
+      const makeIndexer = () =>
+        createIndexer({
+          worktree: dir,
+          options,
+          store,
+          parse: async () => {
+            parseCalls++
+            return { language: "typescript", root: undefined }
+          },
+          embed: async () => {
+            embedCalls++
+            return [1, 0]
+          },
+        })
+
+      await makeIndexer().refresh()
+      const db = new Database(path.join(cacheDir, "key", "index.sqlite"))
+      try {
+        const activeRun = db.query("select value from meta where key = 'active_run_id'").get() as { value: string }
+        const run = db.query("select metadata_json as metadataJson from runs where id = ?").get(activeRun.value) as {
+          metadataJson: string
+        }
+        const metadata = JSON.parse(run.metadataJson)
+        db.run("update runs set metadata_json = ? where id = ?", [
+          JSON.stringify({ ...metadata, worktree: path.join(dir, "missing") }),
+          activeRun.value,
+        ])
+      } finally {
+        db.close()
+      }
+      const hydrated = await store.read()
+
+      expect(Object.values(hydrated.chunks)[0].text).toBe("")
+      expect(hydrated.metadata.diagnostics).toContain("source read failed for a.ts; chunk text unavailable")
+
+      const index = await makeIndexer().refresh()
+
+      expect(parseCalls).toBe(2)
+      expect(embedCalls).toBe(2)
+      expect(Object.values(index.chunks)[0].text).toBe("export const a = 1\n")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
     }
   })
 

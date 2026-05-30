@@ -52,15 +52,18 @@ export function createIndexer(input: {
     async refresh() {
       const store = input.store
       const index = await store.read()
+      const canReuseExistingRecords =
+        index.metadata.maxChunkNonWhitespaceChars === input.options.maxChunkNonWhitespaceChars &&
+        sameChunkingOptions(index.metadata.chunking, input.options.chunking)
       index.metadata.status = "indexing"
+      index.metadata.worktree = input.worktree
+      index.metadata.maxChunkNonWhitespaceChars = input.options.maxChunkNonWhitespaceChars
+      index.metadata.chunking = input.options.chunking
       const runConfigHash = indexRunConfigHash(index, input.options)
       const runStore = hasRunStore(store) ? store : undefined
       const run = runStore
         ? await runStore.beginIndexRun({ configHash: runConfigHash, metadata: index.metadata })
         : undefined
-      const canReuseExistingRecords =
-        index.metadata.maxChunkNonWhitespaceChars === input.options.maxChunkNonWhitespaceChars &&
-        sameChunkingOptions(index.metadata.chunking, input.options.chunking)
       const files = await scanFiles(input.worktree, input.options.includeGlobs, input.options.excludeGlobs)
       const nextFiles: CastIndex["files"] = {}
       const nextChunks: CastIndex["chunks"] = {}
@@ -282,6 +285,7 @@ function canReuseFile(
       (entry) =>
         entry.chunk.filePath !== relativePath ||
         entry.chunk.language !== file.language ||
+        entry.chunk.text.length === 0 ||
         !entry.chunk.embedding ||
         entry.chunk.embeddingError ||
         entry.chunk.symbolIds.some((id) => index.symbols[id]?.id !== id || index.symbols[id]?.filePath !== file.path) ||

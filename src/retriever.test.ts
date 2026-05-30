@@ -826,7 +826,7 @@ describe("retrieve", () => {
     expect(output.diagnostics).toContain("a.ts: embedding failed: boom")
   })
 
-  test("omits parent text and range when source read fails", async () => {
+  test("returns empty result text and omits parent context when source read fails", async () => {
     const index = createEmptyIndex({
       projectId: "p",
       worktree: "/repo",
@@ -868,8 +868,96 @@ describe("retrieve", () => {
     })
 
     expect(output.results[0].breadcrumbs).toEqual(["class A"])
+    expect(output.results[0].text).toBe("")
     expect(output.results[0].parentText).toBeUndefined()
     expect(output.results[0].parentRange).toBeUndefined()
+    expect(output.diagnostics).toContain("source read failed for a.ts; parent context omitted")
+  })
+
+  test("does not return stale hydrated chunk text when source read fails", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.symbols.s1 = {
+      id: "s1",
+      name: "A",
+      kind: "class",
+      filePath: "a.ts",
+      range: { byteStart: 0, byteEnd: 22, lineStart: 1, lineEnd: 3 },
+      childSymbolIds: [],
+    }
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "method",
+      range: { byteStart: 12, byteEnd: 18, lineStart: 2, lineEnd: 2 },
+      text: "a() {}",
+      nonWhitespaceChars: 5,
+      nodeTypes: [],
+      symbolIds: ["s1"],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => {
+        throw new Error("read failed")
+      },
+    })
+
+    expect(output.results[0].text).toBe("")
+    expect(output.results[0].parentText).toBeUndefined()
+    expect(output.results[0].parentRange).toBeUndefined()
+    expect(output.diagnostics).toContain("source read failed for a.ts; parent context omitted")
+  })
+
+  test("returns empty text with diagnostics when hydrated chunk text is unavailable and source read fails", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+      diagnostics: ["source read failed for a.ts; chunk text unavailable"],
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 15, lineStart: 1, lineEnd: 1 },
+      text: "",
+      nonWhitespaceChars: 0,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => {
+        throw new Error("read failed")
+      },
+    })
+
+    expect(output.results[0].text).toBe("")
+    expect(output.results[0].parentText).toBeUndefined()
+    expect(output.diagnostics).toContain("source read failed for a.ts; chunk text unavailable")
     expect(output.diagnostics).toContain("source read failed for a.ts; parent context omitted")
   })
 
@@ -913,6 +1001,7 @@ describe("retrieve", () => {
     })
 
     expect(output.results[0].breadcrumbs).toEqual(["class A"])
+    expect(output.results[0].text).toBe("")
     expect(output.results[0].parentText).toBeUndefined()
     expect(output.results[0].parentRange).toBeUndefined()
     expect(output.diagnostics).toContain("source mismatch for a.ts:c1; parent context omitted")

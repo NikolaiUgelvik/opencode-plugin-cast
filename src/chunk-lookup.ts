@@ -7,6 +7,8 @@ async function getChunkById(input: {
   readSource(filePath: string): Promise<string>
 }): Promise<ChunkLookupOutput> {
   const diagnostics = [...input.index.metadata.diagnostics]
+  const sourceCache = new Map<string, Promise<SourceReadResult>>()
+  const getSource = (filePath: string) => readSourceCached(filePath, input.readSource, sourceCache)
   const chunk = input.index.chunks[input.input.id]
   if (!chunk) {
     if (input.index.metadata.status !== "ready") {
@@ -21,13 +23,27 @@ async function getChunkById(input: {
     }
   }
 
-  const context = await parentContext({
+  const source = await getSource(chunk.filePath)
+  const chunkText = validatedChunkText(chunk, source, diagnostics, "chunk text omitted")
+
+  const context = parentContext({
     chunk,
     diagnostics,
     includeParents: input.input.includeParents,
     index: input.index,
     maxContextChars: input.input.maxContextChars,
-    readSource: input.readSource,
+    source,
+  })
+  const related = await relatedChunks({
+    chunk,
+    chunks: input.index.chunks,
+    diagnostics,
+    getSource,
+    includeChildren: input.input.includeChildren,
+    includeParents: input.input.includeParents,
+    includeSiblings: input.input.includeSiblings,
+    maxContextChars: input.input.maxContextChars,
+    symbols: input.index.symbols,
   })
 
   return {
@@ -38,19 +54,11 @@ async function getChunkById(input: {
       range: chunk.range,
       kind: chunk.kind,
       breadcrumbs: context.breadcrumbs,
-      text: chunk.text,
+      text: chunkText,
       parentText: context.parentText,
       parentRange: context.parentRange,
       topology: summarizeTopology(chunk, input.index.chunks, input.index.symbols),
-      related: relatedChunks({
-        chunk,
-        chunks: input.index.chunks,
-        includeChildren: input.input.includeChildren,
-        includeParents: input.input.includeParents,
-        includeSiblings: input.input.includeSiblings,
-        maxContextChars: input.input.maxContextChars,
-        symbols: input.index.symbols,
-      }),
+      related,
     },
     diagnostics,
   }
@@ -59,83 +67,146 @@ async function getChunkById(input: {
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-async function parentContext(input: {
+type SourceReadResult = { text: string; ok: true } | { text: ""; ok: false }
+
+function parentContext(input: {
   chunk: ChunkRecord
   diagnostics: string[]
   includeParents: boolean | undefined
   index: CastIndex
   maxContextChars: number | undefined
-  readSource(filePath: string): Promise<string>
-}): Promise<{ breadcrumbs: string[]; parentText?: string; parentRange?: ChunkRecord["range"] }> {
+  source: SourceReadResult
+}): { breadcrumbs: string[]; parentText?: string; parentRange?: ChunkRecord["range"] } {
   if (input.includeParents === false) {
     return { breadcrumbs: breadcrumbsFor(input.chunk, input.index.symbols) }
   }
 
-  const source = await input
-    .readSource(input.chunk.filePath)
-    .then((text) => ({ text, ok: true }))
-    .catch(() => {
-      input.diagnostics.push(`source read failed for ${input.chunk.filePath}; parent context omitted`)
-      return { text: "", ok: false }
-    })
-  if (source.ok && indexedChunkMatchesSource(source.text, input.chunk)) {
+  if (input.source.ok && indexedChunkMatchesSource(input.source.text, input.chunk)) {
     return expandWithParentContext({
       chunk: input.chunk,
       symbols: input.index.symbols,
-      source: source.text,
+      source: input.source.text,
       maxContextChars: input.maxContextChars ?? Number.MAX_SAFE_INTEGER,
     })
   }
-  if (source.ok) {
+  if (input.source.ok) {
     input.diagnostics.push(`source mismatch for ${input.chunk.filePath}:${input.chunk.id}; parent context omitted`)
+  } else {
+    input.diagnostics.push(`source read failed for ${input.chunk.filePath}; parent context omitted`)
   }
   return { breadcrumbs: breadcrumbsFor(input.chunk, input.index.symbols) }
 }
 
-function relatedChunks(input: {
+async function relatedChunks(input: {
   chunk: ChunkRecord
   chunks: CastIndex["chunks"]
+  diagnostics: string[]
+  getSource(filePath: string): Promise<SourceReadResult>
   includeChildren: boolean | undefined
   includeParents: boolean | undefined
   includeSiblings: boolean | undefined
   maxContextChars: number | undefined
   symbols: CastIndex["symbols"]
-}): NonNullable<ChunkLookupOutput["chunk"]>["related"] {
+}): Promise<NonNullable<ChunkLookupOutput["chunk"]>["related"]> {
+  const [parent, previousSibling, nextSibling, children] = await Promise.all([
+    input.includeParents === false
+      ? undefined
+      : relatedChunk({
+          chunk: input.chunks[input.chunk.parentChunkId ?? ""],
+          symbols: input.symbols,
+          maxContextChars: input.maxContextChars,
+          diagnostics: input.diagnostics,
+          getSource: input.getSource,
+        }),
+    input.includeSiblings === false
+      ? undefined
+      : relatedChunk({
+          chunk: input.chunks[input.chunk.previousSiblingChunkId ?? ""],
+          symbols: input.symbols,
+          maxContextChars: input.maxContextChars,
+          diagnostics: input.diagnostics,
+          getSource: input.getSource,
+        }),
+    input.includeSiblings === false
+      ? undefined
+      : relatedChunk({
+          chunk: input.chunks[input.chunk.nextSiblingChunkId ?? ""],
+          symbols: input.symbols,
+          maxContextChars: input.maxContextChars,
+          diagnostics: input.diagnostics,
+          getSource: input.getSource,
+        }),
+    input.includeChildren === false
+      ? []
+      : Promise.all(
+          input.chunk.childChunkIds.map((id) =>
+            relatedChunk({
+              chunk: input.chunks[id],
+              symbols: input.symbols,
+              maxContextChars: input.maxContextChars,
+              diagnostics: input.diagnostics,
+              getSource: input.getSource,
+            }),
+          ),
+        ),
+  ])
   return {
-    parent:
-      input.includeParents === false
-        ? undefined
-        : relatedChunk(input.chunks[input.chunk.parentChunkId ?? ""], input.symbols, input.maxContextChars),
-    previousSibling:
-      input.includeSiblings === false
-        ? undefined
-        : relatedChunk(input.chunks[input.chunk.previousSiblingChunkId ?? ""], input.symbols, input.maxContextChars),
-    nextSibling:
-      input.includeSiblings === false
-        ? undefined
-        : relatedChunk(input.chunks[input.chunk.nextSiblingChunkId ?? ""], input.symbols, input.maxContextChars),
-    children:
-      input.includeChildren === false
-        ? []
-        : input.chunk.childChunkIds.flatMap((id) => {
-            const child = relatedChunk(input.chunks[id], input.symbols, input.maxContextChars)
-            return child ? [child] : []
-          }),
+    parent,
+    previousSibling,
+    nextSibling,
+    children: children.flatMap((child) => (child ? [child] : [])),
   }
 }
 
-function relatedChunk(
-  chunk: ChunkRecord | undefined,
-  symbols: CastIndex["symbols"],
-  maxContextChars: number | undefined,
-): ChunkLookupRelatedChunk | undefined {
-  if (!chunk) {
+async function relatedChunk(input: {
+  chunk: ChunkRecord | undefined
+  symbols: CastIndex["symbols"]
+  maxContextChars: number | undefined
+  diagnostics: string[]
+  getSource(filePath: string): Promise<SourceReadResult>
+}): Promise<ChunkLookupRelatedChunk | undefined> {
+  if (!input.chunk) {
     return
   }
+  const source = await input.getSource(input.chunk.filePath)
+  const text = validatedChunkText(input.chunk, source, input.diagnostics, "related chunk text omitted")
   return {
-    ...summarizeChunk(chunk, symbols),
-    text: maxContextChars === undefined ? chunk.text : chunk.text.slice(0, maxContextChars),
+    ...summarizeChunk(input.chunk, input.symbols),
+    text: input.maxContextChars === undefined ? text : text.slice(0, input.maxContextChars),
   }
+}
+
+function validatedChunkText(
+  chunk: ChunkRecord,
+  source: SourceReadResult,
+  diagnostics: string[],
+  omittedReason: string,
+) {
+  if (!source.ok) {
+    diagnostics.push(`source read failed for ${chunk.filePath}:${chunk.id}; ${omittedReason}`)
+    return ""
+  }
+  if (!indexedChunkMatchesSource(source.text, chunk)) {
+    diagnostics.push(`source mismatch for ${chunk.filePath}:${chunk.id}; ${omittedReason}`)
+    return ""
+  }
+  return chunk.text
+}
+
+function readSourceCached(
+  filePath: string,
+  readSource: (filePath: string) => Promise<string>,
+  sourceCache: Map<string, Promise<SourceReadResult>>,
+) {
+  const cached = sourceCache.get(filePath)
+  if (cached) {
+    return cached
+  }
+  const source = readSource(filePath)
+    .then((text): SourceReadResult => ({ text, ok: true }))
+    .catch((): SourceReadResult => ({ text: "", ok: false }))
+  sourceCache.set(filePath, source)
+  return source
 }
 
 function indexedChunkMatchesSource(source: string, chunk: ChunkRecord) {

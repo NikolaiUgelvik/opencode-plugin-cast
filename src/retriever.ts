@@ -162,11 +162,12 @@ export async function retrieve(input: {
           .then((text) => ({ text, ok: true }))
           .catch(() => {
             diagnostics.push(`source read failed for ${chunk.filePath}; parent context omitted`)
-            return { text: chunk.text, ok: false }
+            return { text: "", ok: false }
           })
         if (source.ok && !indexedChunkMatchesSource(source.text, chunk)) {
           diagnostics.push(`source mismatch for ${chunk.filePath}:${chunk.id}; parent context omitted`)
         }
+        const outputText = source.ok && indexedChunkMatchesSource(source.text, chunk) ? chunk.text : ""
         const context = parentContext({
           chunk,
           includeParents: input.input.includeParents,
@@ -184,7 +185,7 @@ export async function retrieve(input: {
             finalScore: result.score,
             kind: chunk.kind,
             breadcrumbs: context.breadcrumbs,
-            text: chunk.text,
+            text: outputText,
             parentText: context.parentText,
             parentRange: context.parentRange,
             topology: summarizeTopology(chunk, chunksById, input.index.symbols),

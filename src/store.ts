@@ -1,11 +1,13 @@
 import { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { load as loadSqliteVec } from "sqlite-vec"
 import type { CastIndex, ChunkingOptions, ChunkRecord, FileRecord, LexicalIndex, SymbolRecord } from "./types.js"
 
 export const INDEX_SCHEMA_VERSION = 1
-const SQLITE_SCHEMA_VERSION = 2
+const SQLITE_SCHEMA_VERSION = 3
 const GLOB_SYNTAX_PATTERN = /[*?[]/
 const REGEXP_SPECIAL_CHAR_PATTERN = /[\\^$.*+?()[\]{}|]/
 const CHARACTER_CLASS_SPECIAL_PATTERN = /[\\\]^]/
@@ -29,6 +31,22 @@ export interface FileResult {
   file: FileRecord
   chunks: Record<string, ChunkRecord>
   symbols: Record<string, SymbolRecord>
+}
+
+type StoredChunkRecord = Omit<ChunkRecord, "text" | "embedding"> & { text?: never; embedding?: never }
+
+interface SourceHydrationContext {
+  worktree: string
+  files: Record<string, FileRecord>
+  diagnostics: string[]
+  filePaths?: Set<string>
+}
+
+type SourceReadResult = { ok: true; bytes: Buffer } | { ok: false }
+
+function chunkForStorage(chunk: ChunkRecord): StoredChunkRecord {
+  const { text: _text, embedding: _embedding, ...storedChunk } = chunk
+  return storedChunk
 }
 
 export function createEmptyIndex(input: {
@@ -143,17 +161,21 @@ function readSqliteIndex(db: Database, cacheKey: string, embeddingDimensions?: n
   }
 
   try {
-    const run = db.query("select metadata_json as metadataJson from runs where id = ?").get(activeRun.value) as {
-      metadataJson: string
-    } | null
-    if (!run) {
+    const metadata = readRunMetadata(db, activeRun.value)
+    if (!metadata) {
       return createEmptySqliteIndex(cacheKey, embeddingDimensions, ["rebuilding corrupt index"])
     }
 
+    const files = readFiles(db, activeRun.value)
+    const diagnostics = [...metadata.diagnostics]
     const index: CastIndex = {
-      metadata: parsePersistedJson(run.metadataJson),
-      files: readFiles(db, activeRun.value),
-      chunks: readChunks(db, activeRun.value, readVectors(db, activeRun.value)),
+      metadata: { ...metadata, diagnostics },
+      files,
+      chunks: readChunks(db, activeRun.value, readVectors(db, activeRun.value), {
+        worktree: metadata.worktree,
+        files,
+        diagnostics,
+      }),
       symbols: readSymbols(db, activeRun.value),
     }
     const lexical = readLexical(db, activeRun.value)
@@ -170,6 +192,13 @@ function readSqliteIndex(db: Database, cacheKey: string, embeddingDimensions?: n
     }
     return createEmptySqliteIndex(cacheKey, embeddingDimensions, ["rebuilding corrupt index"])
   }
+}
+
+function readRunMetadata(db: Database, runId: string) {
+  const run = db.query("select metadata_json as metadataJson from runs where id = ?").get(runId) as {
+    metadataJson: string
+  } | null
+  return run ? parsePersistedJson<CastIndex["metadata"]>(run.metadataJson) : undefined
 }
 
 function createEmptySqliteIndex(cacheKey: string, embeddingDimensions?: number, diagnostics?: string[]) {
@@ -234,14 +263,47 @@ function readVectors(db: Database, runId: string) {
   return vectors
 }
 
-function readChunks(db: Database, runId: string, vectors: Map<string, number[]>) {
+function readVectorsForChunkIds(db: Database, runId: string, chunkIds: string[]) {
+  const vectors = new Map<string, number[]>()
+  if (chunkIds.length === 0 || !tableExists(db, "chunk_vectors")) {
+    return vectors
+  }
+  const placeholders = placeholdersFor(chunkIds)
+  const vectorRows = db
+    .query(
+      `select chunk_rowids.chunk_id as chunkId, vec_to_json(chunk_vectors.embedding) as embedding
+       from chunk_rowids
+       inner join chunk_vectors on chunk_vectors.rowid = chunk_rowids.rowid
+       where chunk_rowids.run_id = ? and chunk_rowids.chunk_id in (${placeholders})`,
+    )
+    .all(runId, ...chunkIds) as Array<{ chunkId: string; embedding: string }>
+  for (const row of vectorRows) {
+    vectors.set(row.chunkId, parsePersistedJson(row.embedding))
+  }
+  return vectors
+}
+
+function readChunks(
+  db: Database,
+  runId: string,
+  vectors: Map<string, number[]>,
+  sourceContext?: SourceHydrationContext,
+) {
   const records: Record<string, ChunkRecord> = {}
+  const sourceCache = new Map<string, SourceReadResult>()
   const chunks = db.query("select id, record_json as recordJson from chunks where run_id = ?").all(runId) as Array<{
     id: string
     recordJson: string
   }>
   for (const chunk of chunks) {
-    const record = parsePersistedJson<ChunkRecord>(chunk.recordJson)
+    const storedRecord = parsePersistedJson<StoredChunkRecord>(chunk.recordJson)
+    if (sourceContext?.filePaths && !sourceContext.filePaths.has(storedRecord.filePath)) {
+      continue
+    }
+    const record: ChunkRecord = {
+      ...storedRecord,
+      text: readChunkText(sourceContext, sourceCache, storedRecord),
+    }
     const embedding = vectors.get(chunk.id)
     if (embedding) {
       record.embedding = embedding
@@ -249,6 +311,99 @@ function readChunks(db: Database, runId: string, vectors: Map<string, number[]>)
     records[chunk.id] = record
   }
   return records
+}
+
+function readFileChunks(input: {
+  db: Database
+  runId: string
+  file: FileRecord
+  vectors: Map<string, number[]>
+  sourceContext: SourceHydrationContext
+}) {
+  const records: Record<string, ChunkRecord> = {}
+  if (input.file.chunkIds.length === 0) {
+    return records
+  }
+  const sourceCache = new Map<string, SourceReadResult>()
+  const placeholders = placeholdersFor(input.file.chunkIds)
+  const chunks = input.db
+    .query(
+      `select id, record_json as recordJson
+       from chunks
+       where run_id = ? and file_path = ? and id in (${placeholders})`,
+    )
+    .all(input.runId, input.file.path, ...input.file.chunkIds) as Array<{
+    id: string
+    recordJson: string
+  }>
+  for (const chunk of chunks) {
+    const storedRecord = parsePersistedJson<StoredChunkRecord>(chunk.recordJson)
+    const record: ChunkRecord = {
+      ...storedRecord,
+      text: readChunkText(input.sourceContext, sourceCache, storedRecord),
+    }
+    const embedding = input.vectors.get(chunk.id)
+    if (embedding) {
+      record.embedding = embedding
+    }
+    records[chunk.id] = record
+  }
+  return records
+}
+
+function readChunkText(
+  sourceContext: SourceHydrationContext | undefined,
+  sourceCache: Map<string, SourceReadResult>,
+  chunk: StoredChunkRecord,
+) {
+  if (!sourceContext) {
+    return ""
+  }
+  const source = readSource(sourceContext, sourceCache, chunk.filePath)
+  if (!source.ok) {
+    return ""
+  }
+  if (
+    chunk.range.byteStart < 0 ||
+    chunk.range.byteEnd < chunk.range.byteStart ||
+    chunk.range.byteEnd > source.bytes.length
+  ) {
+    sourceContext.diagnostics.push(`source range invalid for ${chunk.filePath}:${chunk.id}; chunk text unavailable`)
+    return ""
+  }
+  return source.bytes.subarray(chunk.range.byteStart, chunk.range.byteEnd).toString()
+}
+
+function readSource(
+  sourceContext: SourceHydrationContext,
+  sourceCache: Map<string, SourceReadResult>,
+  filePath: string,
+): SourceReadResult {
+  const cached = sourceCache.get(filePath)
+  if (cached) {
+    return cached
+  }
+  const result = readSourceUncached(sourceContext, filePath)
+  sourceCache.set(filePath, result)
+  return result
+}
+
+function readSourceUncached(sourceContext: SourceHydrationContext, filePath: string): SourceReadResult {
+  try {
+    const bytes = readFileSync(path.join(sourceContext.worktree, filePath))
+    if (fingerprint(bytes) !== sourceContext.files[filePath]?.fingerprint) {
+      sourceContext.diagnostics.push(`source fingerprint mismatch for ${filePath}; chunk text unavailable`)
+      return { ok: false }
+    }
+    return { ok: true, bytes }
+  } catch {
+    sourceContext.diagnostics.push(`source read failed for ${filePath}; chunk text unavailable`)
+    return { ok: false }
+  }
+}
+
+function fingerprint(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex")
 }
 
 function readSymbols(db: Database, runId: string) {
@@ -261,6 +416,24 @@ function readSymbols(db: Database, runId: string) {
     records[symbol.id] = parsePersistedJson(symbol.recordJson)
   }
   return records
+}
+
+function readSymbolsForFile(db: Database, runId: string, filePath: string) {
+  const records: Record<string, SymbolRecord> = {}
+  const symbols = db
+    .query("select id, record_json as recordJson from symbols where run_id = ? and file_path = ?")
+    .all(runId, filePath) as Array<{
+    id: string
+    recordJson: string
+  }>
+  for (const symbol of symbols) {
+    records[symbol.id] = parsePersistedJson(symbol.recordJson)
+  }
+  return records
+}
+
+function placeholdersFor(values: unknown[]) {
+  return values.map(() => "?").join(", ")
 }
 
 function readLexical(db: Database, runId: string) {
@@ -290,13 +463,12 @@ function writeSqliteIndex(db: Database, index: CastIndex) {
 
     let vectorRowid = 1
     for (const chunk of Object.values(castIndex.chunks)) {
-      const { embedding: _embedding, ...storedChunk } = chunk
       db.run("insert into chunks (run_id, id, file_path, kind, record_json) values (?, ?, ?, ?, ?)", [
         runId,
         chunk.id,
         chunk.filePath,
         chunk.kind,
-        JSON.stringify(storedChunk),
+        JSON.stringify(chunkForStorage(chunk)),
       ])
       if (chunk.embedding) {
         db.run("insert into chunk_vectors (rowid, embedding) values (?, ?)", [
@@ -374,12 +546,30 @@ function getCompletedSqliteFile(
     chunkIds: JSON.parse(file.chunkIdsJson),
     diagnostics: JSON.parse(file.diagnosticsJson),
   }
-  const chunks = readChunks(db, runId, readVectors(db, runId))
-  const symbols = readSymbols(db, runId)
+  const metadata = readRunMetadata(db, runId)
+  if (!metadata) {
+    return
+  }
+  const diagnostics: string[] = []
+  const chunks = readFileChunks({
+    db,
+    runId,
+    file: record,
+    vectors: readVectorsForChunkIds(db, runId, record.chunkIds),
+    sourceContext: {
+      worktree: metadata.worktree,
+      files: { [record.path]: record },
+      diagnostics,
+      filePaths: new Set([record.path]),
+    },
+  })
+  if (diagnostics.length > 0) {
+    return
+  }
   return {
     file: record,
     chunks: Object.fromEntries(record.chunkIds.map((id) => [id, chunks[id]]).filter((entry) => entry[1])),
-    symbols: Object.fromEntries(Object.entries(symbols).filter((entry) => entry[1].filePath === filePath)),
+    symbols: readSymbolsForFile(db, runId, filePath),
   }
 }
 
@@ -513,13 +703,12 @@ function insertFile(db: Database, runId: string, file: FileRecord, updateGlobalF
 function insertChunks(db: Database, runId: string, chunks: ChunkRecord[]) {
   let vectorRowid = nextVectorRowid(db)
   for (const chunk of chunks) {
-    const { embedding: _embedding, ...storedChunk } = chunk
     db.run("insert into chunks (run_id, id, file_path, kind, record_json) values (?, ?, ?, ?, ?)", [
       runId,
       chunk.id,
       chunk.filePath,
       chunk.kind,
-      JSON.stringify(storedChunk),
+      JSON.stringify(chunkForStorage(chunk)),
     ])
     if (chunk.embedding) {
       db.run("insert into chunk_vectors (rowid, embedding) values (?, ?)", [

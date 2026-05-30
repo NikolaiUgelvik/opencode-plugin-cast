@@ -230,4 +230,170 @@ describe("chunk lookup", () => {
     expect(output.chunk?.parentText).toBeUndefined()
     expect(output.chunk?.related.parent).toBeUndefined()
   })
+
+  test("returns reconstructed chunk text and related chunk text", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    const source = "class Parser {\n  parse() {\n    return value\n  }\n}\n"
+    const parentText = source.trimEnd()
+    const targetText = "parse() {\n    return value\n  }"
+    const childText = "return value"
+    const targetStart = source.indexOf(targetText)
+    const childStart = source.indexOf(childText)
+    index.chunks.parent = {
+      id: "parent",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "class",
+      range: { byteStart: 0, byteEnd: parentText.length, lineStart: 1, lineEnd: 5 },
+      text: parentText,
+      nonWhitespaceChars: 36,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: ["target"],
+    }
+    index.chunks.target = {
+      id: "target",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "method",
+      range: { byteStart: targetStart, byteEnd: targetStart + targetText.length, lineStart: 2, lineEnd: 4 },
+      text: targetText,
+      nonWhitespaceChars: 25,
+      nodeTypes: [],
+      symbolIds: [],
+      parentChunkId: "parent",
+      childChunkIds: ["child"],
+    }
+    index.chunks.child = {
+      id: "child",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "block",
+      range: { byteStart: childStart, byteEnd: childStart + childText.length, lineStart: 3, lineEnd: 3 },
+      text: childText,
+      nonWhitespaceChars: 11,
+      nodeTypes: [],
+      symbolIds: [],
+      parentChunkId: "target",
+      childChunkIds: [],
+    }
+
+    const output = await getChunkById({
+      index,
+      input: { id: "target", maxContextChars: 20 },
+      readSource: async () => source,
+    })
+
+    expect(output.chunk?.text).toBe(targetText)
+    expect(output.chunk?.related.parent?.text).toBe(parentText.slice(0, 20))
+    expect(output.chunk?.related.children).toEqual([
+      { id: "child", label: "block return value", range: "src/parser.ts:3", text: childText },
+    ])
+    expect(output.diagnostics).toEqual([])
+  })
+
+  test("does not return stale hydrated target or related chunk text when source read fails", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+      diagnostics: ["source read failed for src/parser.ts; chunk text unavailable"],
+    })
+    index.metadata.status = "ready"
+    index.chunks.parent = {
+      id: "parent",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "class",
+      range: { byteStart: 0, byteEnd: 20, lineStart: 1, lineEnd: 3 },
+      text: "class Parser {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: ["target"],
+    }
+    index.chunks.target = {
+      id: "target",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "method",
+      range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+      text: "parse() {}",
+      nonWhitespaceChars: 9,
+      nodeTypes: [],
+      symbolIds: [],
+      parentChunkId: "parent",
+      childChunkIds: [],
+    }
+
+    const output = await getChunkById({
+      index,
+      input: { id: "target" },
+      readSource: async () => {
+        throw new Error("read failed")
+      },
+    })
+
+    expect(output.chunk?.text).toBe("")
+    expect(output.chunk?.related.parent?.text).toBe("")
+    expect(output.chunk?.parentText).toBeUndefined()
+    expect(output.diagnostics).toContain("source read failed for src/parser.ts; chunk text unavailable")
+    expect(output.diagnostics).toContain("source read failed for src/parser.ts; parent context omitted")
+    expect(output.diagnostics).toContain("source read failed for src/parser.ts:parent; related chunk text omitted")
+  })
+
+  test("does not return stale hydrated target or related chunk text when source mismatches indexed ranges", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.parent = {
+      id: "parent",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "class",
+      range: { byteStart: 0, byteEnd: 20, lineStart: 1, lineEnd: 3 },
+      text: "class Parser {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: ["target"],
+    }
+    index.chunks.target = {
+      id: "target",
+      filePath: "src/parser.ts",
+      language: "typescript",
+      kind: "method",
+      range: { byteStart: 15, byteEnd: 25, lineStart: 2, lineEnd: 2 },
+      text: "parse() {}",
+      nonWhitespaceChars: 9,
+      nodeTypes: [],
+      symbolIds: [],
+      parentChunkId: "parent",
+      childChunkIds: [],
+    }
+
+    const output = await getChunkById({
+      index,
+      input: { id: "target" },
+      readSource: async () => "class Parser {\n  stale() {}\n}\n",
+    })
+
+    expect(output.chunk?.text).toBe("")
+    expect(output.chunk?.related.parent?.text).toBe("")
+    expect(output.chunk?.parentText).toBeUndefined()
+    expect(output.diagnostics).toContain("source mismatch for src/parser.ts:target; chunk text omitted")
+    expect(output.diagnostics).toContain("source mismatch for src/parser.ts:target; parent context omitted")
+    expect(output.diagnostics).toContain("source mismatch for src/parser.ts:parent; related chunk text omitted")
+  })
 })

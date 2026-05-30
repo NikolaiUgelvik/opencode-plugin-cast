@@ -53,7 +53,211 @@ function chunk(id: string, filePath: string, embedding: number[]): ChunkRecord {
   }
 }
 
+async function testFingerprint(filePath: string) {
+  const bytes = new Uint8Array(await Bun.file(filePath).arrayBuffer())
+  const hash = new Bun.CryptoHasher("sha256")
+  hash.update(bytes)
+  return hash.digest("hex")
+}
+
 describe("index store", () => {
+  test("does not persist chunk source text in SQLite record JSON", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      await mkdir(worktree, { recursive: true })
+      const sourcePath = path.join(worktree, "src.ts")
+      await Bun.write(sourcePath, "function hello() {}\n")
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "ready"
+      index.metadata.embeddingDimensions = 2
+      index.files["src.ts"] = {
+        path: "src.ts",
+        language: "typescript",
+        fingerprint: await testFingerprint(sourcePath),
+        chunkIds: ["hello"],
+        diagnostics: [],
+      }
+      index.chunks.hello = {
+        id: "hello",
+        filePath: "src.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+        text: "function hello() {}",
+        nonWhitespaceChars: 17,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+        embedding: [1, 0],
+      }
+      await store.write(index)
+
+      const db = new Database(path.join(dir, "project", "index.sqlite"))
+      try {
+        const row = db.query("select record_json as recordJson from chunks").get() as { recordJson: string }
+        const record = JSON.parse(row.recordJson) as Record<string, unknown>
+
+        expect(row.recordJson).not.toContain("function hello")
+        expect(Object.hasOwn(record, "text")).toBe(false)
+        expect(Object.hasOwn(record, "embedding")).toBe(false)
+      } finally {
+        db.close()
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("returns empty chunk text and diagnostic when source fingerprint mismatches", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src.ts")
+      await mkdir(worktree, { recursive: true })
+      await Bun.write(sourcePath, "function hello() {}\n")
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "ready"
+      index.metadata.embeddingDimensions = 2
+      index.files["src.ts"] = {
+        path: "src.ts",
+        language: "typescript",
+        fingerprint: await testFingerprint(sourcePath),
+        chunkIds: ["hello"],
+        diagnostics: [],
+      }
+      index.chunks.hello = {
+        id: "hello",
+        filePath: "src.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+        text: "function hello() {}",
+        nonWhitespaceChars: 17,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+        embedding: [1, 0],
+      }
+      await store.write(index)
+      await Bun.write(sourcePath, "function changed() {}\n")
+
+      const cached = await store.read()
+
+      expect(cached.chunks.hello.text).toBe("")
+      expect(cached.metadata.diagnostics).toContain("source fingerprint mismatch for src.ts; chunk text unavailable")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("returns empty chunk text and diagnostic when source read failed", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src.ts")
+      await mkdir(worktree, { recursive: true })
+      await Bun.write(sourcePath, "function hello() {}\n")
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "ready"
+      index.metadata.embeddingDimensions = 2
+      index.files["src.ts"] = {
+        path: "src.ts",
+        language: "typescript",
+        fingerprint: await testFingerprint(sourcePath),
+        chunkIds: ["hello"],
+        diagnostics: [],
+      }
+      index.chunks.hello = {
+        id: "hello",
+        filePath: "src.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+        text: "function hello() {}",
+        nonWhitespaceChars: 17,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+        embedding: [1, 0],
+      }
+      await store.write(index)
+      await rm(sourcePath)
+
+      const cached = await store.read()
+
+      expect(cached.chunks.hello.text).toBe("")
+      expect(cached.metadata.diagnostics).toContain("source read failed for src.ts; chunk text unavailable")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("returns empty chunk text and diagnostic when source range invalid", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src.ts")
+      await mkdir(worktree, { recursive: true })
+      await Bun.write(sourcePath, "function hello() {}\n")
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "ready"
+      index.metadata.embeddingDimensions = 2
+      index.files["src.ts"] = {
+        path: "src.ts",
+        language: "typescript",
+        fingerprint: await testFingerprint(sourcePath),
+        chunkIds: ["hello"],
+        diagnostics: [],
+      }
+      index.chunks.hello = {
+        id: "hello",
+        filePath: "src.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 200, lineStart: 1, lineEnd: 1 },
+        text: "function hello() {}",
+        nonWhitespaceChars: 17,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+        embedding: [1, 0],
+      }
+      await store.write(index)
+
+      const cached = await store.read()
+
+      expect(cached.chunks.hello.text).toBe("")
+      expect(cached.metadata.diagnostics).toContain("source range invalid for src.ts:hello; chunk text unavailable")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   test("resumes the latest indexing run with the same config hash", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
     try {
@@ -165,25 +369,312 @@ describe("index store", () => {
   test("hydrates a completed file from an indexing run by matching fingerprint", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
     try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "function a() {}\n")
       const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
       const index = createEmptyIndex({
         projectId: "p",
-        worktree: "/repo",
+        worktree,
         cacheKey: "project",
         maxChunkNonWhitespaceChars: 2000,
       })
       index.metadata.status = "indexing"
       index.metadata.embeddingDimensions = 2
       const { runId } = await store.beginIndexRun({ configHash: "same", metadata: index.metadata })
-      const file = { path: "src/a.ts", language: "typescript", fingerprint: "abc", chunkIds: ["a"], diagnostics: [] }
+      const file = {
+        path: "src/a.ts",
+        language: "typescript",
+        fingerprint: await testFingerprint(sourcePath),
+        chunkIds: ["a"],
+        diagnostics: [],
+      }
       await store.writeFileResult(runId, { file, chunks: { a: chunk("a", "src/a.ts", [1, 0]) }, symbols: {} })
 
-      const completed = await store.getCompletedFile(runId, "src/a.ts", "abc")
+      const completed = await store.getCompletedFile(runId, "src/a.ts", file.fingerprint)
       const stale = await store.getCompletedFile(runId, "src/a.ts", "changed")
 
       expect(completed?.file).toEqual(file)
       expect(completed?.chunks.a.embedding).toEqual([1, 0])
       expect(stale).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("hydrates completed file chunk text from the run worktree source", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "const before = 1\nfunction alpha() {}\n")
+      const sourceText = "function alpha() {}"
+      const byteStart = "const before = 1\n".length
+      const byteEnd = byteStart + sourceText.length
+      const fingerprint = await testFingerprint(sourcePath)
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "indexing"
+      index.metadata.embeddingDimensions = 2
+      const { runId } = await store.beginIndexRun({ configHash: "same", metadata: index.metadata })
+      const file = { path: "src/a.ts", language: "typescript", fingerprint, chunkIds: ["alpha"], diagnostics: [] }
+      await store.writeFileResult(runId, {
+        file,
+        chunks: {
+          alpha: {
+            id: "alpha",
+            filePath: "src/a.ts",
+            language: "typescript",
+            kind: "function",
+            range: { byteStart, byteEnd, lineStart: 2, lineEnd: 2 },
+            text: sourceText,
+            nonWhitespaceChars: 17,
+            nodeTypes: [],
+            symbolIds: [],
+            childChunkIds: [],
+            embedding: [1, 0],
+          },
+        },
+        symbols: {},
+      })
+
+      const completed = await store.getCompletedFile(runId, "src/a.ts", fingerprint)
+
+      expect(completed?.chunks.alpha.text).toBe(sourceText)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("hydrates completed file without reading unrelated chunks", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const firstPath = path.join(worktree, "src/a.ts")
+      const secondPath = path.join(worktree, "src/b.ts")
+      await mkdir(path.dirname(firstPath), { recursive: true })
+      await Bun.write(firstPath, "function alpha() {}\n")
+      await Bun.write(secondPath, "function beta() {}\n")
+      const firstFingerprint = await testFingerprint(firstPath)
+      const secondFingerprint = await testFingerprint(secondPath)
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "indexing"
+      index.metadata.embeddingDimensions = 2
+      const { runId } = await store.beginIndexRun({ configHash: "same", metadata: index.metadata })
+      await store.writeFileResult(runId, {
+        file: {
+          path: "src/a.ts",
+          language: "typescript",
+          fingerprint: firstFingerprint,
+          chunkIds: ["alpha"],
+          diagnostics: [],
+        },
+        chunks: {
+          alpha: {
+            id: "alpha",
+            filePath: "src/a.ts",
+            language: "typescript",
+            kind: "function",
+            range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+            text: "function alpha() {}",
+            nonWhitespaceChars: 17,
+            nodeTypes: [],
+            symbolIds: [],
+            childChunkIds: [],
+            embedding: [1, 0],
+          },
+        },
+        symbols: {},
+      })
+      await store.writeFileResult(runId, {
+        file: {
+          path: "src/b.ts",
+          language: "typescript",
+          fingerprint: secondFingerprint,
+          chunkIds: ["beta"],
+          diagnostics: [],
+        },
+        chunks: {
+          beta: {
+            id: "beta",
+            filePath: "src/b.ts",
+            language: "typescript",
+            kind: "function",
+            range: { byteStart: 0, byteEnd: 18, lineStart: 1, lineEnd: 1 },
+            text: "function beta() {}",
+            nonWhitespaceChars: 16,
+            nodeTypes: [],
+            symbolIds: [],
+            childChunkIds: [],
+            embedding: [0, 1],
+          },
+        },
+        symbols: {},
+      })
+      const db = new Database(path.join(dir, "project", "index.sqlite"))
+      try {
+        db.run("update chunks set record_json = ? where run_id = ? and id = ?", ["{", runId, "beta"])
+      } finally {
+        db.close()
+      }
+
+      const completed = await store.getCompletedFile(runId, "src/a.ts", firstFingerprint)
+
+      expect(completed?.chunks.alpha.text).toBe("function alpha() {}")
+      expect(completed?.chunks.alpha.embedding).toEqual([1, 0])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("does not return completed file when source fingerprint mismatches", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "function alpha() {}\n")
+      const fingerprint = await testFingerprint(sourcePath)
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "indexing"
+      index.metadata.embeddingDimensions = 2
+      const { runId } = await store.beginIndexRun({ configHash: "same", metadata: index.metadata })
+      await store.writeFileResult(runId, {
+        file: { path: "src/a.ts", language: "typescript", fingerprint, chunkIds: ["alpha"], diagnostics: [] },
+        chunks: {
+          alpha: {
+            id: "alpha",
+            filePath: "src/a.ts",
+            language: "typescript",
+            kind: "function",
+            range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+            text: "function alpha() {}",
+            nonWhitespaceChars: 17,
+            nodeTypes: [],
+            symbolIds: [],
+            childChunkIds: [],
+            embedding: [1, 0],
+          },
+        },
+        symbols: {},
+      })
+      await Bun.write(sourcePath, "function changed() {}\n")
+
+      const completed = await store.getCompletedFile(runId, "src/a.ts", fingerprint)
+
+      expect(completed).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("does not return completed file when source read failed", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "function alpha() {}\n")
+      const fingerprint = await testFingerprint(sourcePath)
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "indexing"
+      index.metadata.embeddingDimensions = 2
+      const { runId } = await store.beginIndexRun({ configHash: "same", metadata: index.metadata })
+      await store.writeFileResult(runId, {
+        file: { path: "src/a.ts", language: "typescript", fingerprint, chunkIds: ["alpha"], diagnostics: [] },
+        chunks: {
+          alpha: {
+            id: "alpha",
+            filePath: "src/a.ts",
+            language: "typescript",
+            kind: "function",
+            range: { byteStart: 0, byteEnd: 19, lineStart: 1, lineEnd: 1 },
+            text: "function alpha() {}",
+            nonWhitespaceChars: 17,
+            nodeTypes: [],
+            symbolIds: [],
+            childChunkIds: [],
+            embedding: [1, 0],
+          },
+        },
+        symbols: {},
+      })
+      await rm(sourcePath)
+
+      const completed = await store.getCompletedFile(runId, "src/a.ts", fingerprint)
+
+      expect(completed).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("does not return completed file when source range is invalid", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "function alpha() {}\n")
+      const fingerprint = await testFingerprint(sourcePath)
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree,
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "indexing"
+      index.metadata.embeddingDimensions = 2
+      const { runId } = await store.beginIndexRun({ configHash: "same", metadata: index.metadata })
+      await store.writeFileResult(runId, {
+        file: { path: "src/a.ts", language: "typescript", fingerprint, chunkIds: ["alpha"], diagnostics: [] },
+        chunks: {
+          alpha: {
+            id: "alpha",
+            filePath: "src/a.ts",
+            language: "typescript",
+            kind: "function",
+            range: { byteStart: 0, byteEnd: 200, lineStart: 1, lineEnd: 1 },
+            text: "function alpha() {}",
+            nonWhitespaceChars: 17,
+            nodeTypes: [],
+            symbolIds: [],
+            childChunkIds: [],
+            embedding: [1, 0],
+          },
+        },
+        symbols: {},
+      })
+
+      const completed = await store.getCompletedFile(runId, "src/a.ts", fingerprint)
+
+      expect(completed).toBeUndefined()
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -382,7 +873,7 @@ describe("index store", () => {
       expect(await Bun.file(path.join(dir, "project", "index.json")).exists()).toBe(false)
       const db = new Database(path.join(dir, "project", "index.sqlite"))
       try {
-        expect(db.query("select value from meta where key = 'schema_version'").get()).toEqual({ value: "2" })
+        expect(db.query("select value from meta where key = 'schema_version'").get()).toEqual({ value: "3" })
       } finally {
         db.close()
       }
@@ -426,9 +917,13 @@ describe("index store", () => {
   test("persists and hydrates the active run index", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
     try {
+      const worktree = path.join(dir, "worktree")
+      const sourcePath = path.join(worktree, "src/a.ts")
+      await mkdir(path.dirname(sourcePath), { recursive: true })
+      await Bun.write(sourcePath, "\nfunction alpha() {}\n")
       const index: CastIndex = createEmptyIndex({
         projectId: "p",
-        worktree: "/repo",
+        worktree,
         cacheKey: "project",
         maxChunkNonWhitespaceChars: 2000,
       })
@@ -439,7 +934,7 @@ describe("index store", () => {
       index.files["src/a.ts"] = {
         path: "src/a.ts",
         language: "typescript",
-        fingerprint: "abc123",
+        fingerprint: await testFingerprint(sourcePath),
         chunkIds: ["chunk-1"],
         diagnostics: ["file diagnostic"],
       }
