@@ -140,6 +140,7 @@ describe("chunk lookup", () => {
       maxChunkNonWhitespaceChars: 2000,
       diagnostics: ["index diagnostic"],
     })
+    index.metadata.status = "ready"
 
     const output = await getChunkById({
       index,
@@ -149,6 +150,24 @@ describe("chunk lookup", () => {
 
     expect(output.chunk).toBeUndefined()
     expect(output.diagnostics).toEqual(["index diagnostic", "chunk not found: missing"])
+  })
+
+  test("reports an unavailable index before treating the chunk id as missing", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+
+    const output = await getChunkById({
+      index,
+      input: { id: "missing" },
+      readSource: async () => "",
+    })
+
+    expect(output.chunk).toBeUndefined()
+    expect(output.diagnostics).toEqual(["index unavailable: empty"])
   })
 
   test("keeps symbol breadcrumbs when parent context is disabled", async () => {

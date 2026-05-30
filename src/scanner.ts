@@ -7,9 +7,21 @@ import { castChunks, type SyntaxNode } from "./cast.js"
 import { fallbackChunks } from "./fallback.js"
 import { buildLexicalIndex } from "./lexical.js"
 import { assignSymbolsToChunks, attachTopology, extractSymbols } from "./topology.js"
-import type { CastIndex, ChunkingOptions } from "./types.js"
+import type { CastIndex, ChunkingOptions, ChunkRecord, FileRecord, SymbolRecord } from "./types.js"
 
-type Store = { read(): Promise<CastIndex>; write(index: CastIndex): Promise<void> }
+type FileResult = {
+  file: FileRecord
+  chunks: Record<string, ChunkRecord>
+  symbols: Record<string, SymbolRecord>
+}
+type Store = {
+  read(): Promise<CastIndex>
+  write(index: CastIndex): Promise<void>
+  beginIndexRun?(input: { configHash: string; metadata: CastIndex["metadata"] }): Promise<{ runId: string }>
+  getCompletedFile?(runId: string, filePath: string, fingerprint: string): Promise<FileResult | undefined>
+  writeFileResult?(runId: string, fileResult: FileResult): Promise<void>
+  activateRun?(runId: string, index: CastIndex): Promise<void>
+}
 type GitignoreMatcher = { base: string; matcher: Ignore }
 const BINARY_SAMPLE_BYTES = Number("16") * Number("1024")
 const BYTE_NUL = 0
@@ -38,8 +50,14 @@ export function createIndexer(input: {
 }) {
   return {
     async refresh() {
-      const index = await input.store.read()
+      const store = input.store
+      const index = await store.read()
       index.metadata.status = "indexing"
+      const runConfigHash = indexRunConfigHash(index, input.options)
+      const runStore = hasRunStore(store) ? store : undefined
+      const run = runStore
+        ? await runStore.beginIndexRun({ configHash: runConfigHash, metadata: index.metadata })
+        : undefined
       const canReuseExistingRecords =
         index.metadata.maxChunkNonWhitespaceChars === input.options.maxChunkNonWhitespaceChars &&
         sameChunkingOptions(index.metadata.chunking, input.options.chunking)
@@ -58,6 +76,23 @@ export function createIndexer(input: {
           continue
         }
         const currentFingerprint = await fingerprint(absolutePath)
+        if (run && runStore) {
+          const completed = await runStore.getCompletedFile(run.runId, relativePath, currentFingerprint)
+          if (completed) {
+            const completedIndex = {
+              ...index,
+              files: { [relativePath]: completed.file },
+              chunks: completed.chunks,
+              symbols: completed.symbols,
+            }
+            if (canReuseFile(completedIndex, completed.file, relativePath, currentFingerprint, true)) {
+              nextFiles[relativePath] = completed.file
+              Object.assign(nextChunks, completed.chunks)
+              Object.assign(nextSymbols, completed.symbols)
+              continue
+            }
+          }
+        }
         const previousFile = index.files[relativePath]
         if (canReuseFile(index, previousFile, relativePath, currentFingerprint, canReuseExistingRecords)) {
           nextFiles[relativePath] = previousFile
@@ -100,6 +135,7 @@ export function createIndexer(input: {
         const chunks = attachTopology(assignSymbolsToChunks(rawChunks, symbolsById), symbolsById)
         const fileDiagnostics = "diagnostic" in parsed ? [String(parsed.diagnostic)] : []
 
+        const fileChunks: CastIndex["chunks"] = {}
         for (const chunk of chunks) {
           const embedded = await input
             .embed(embeddingText(relativePath, parsed.language, chunk, symbolsById, input.options.chunking.expansion))
@@ -108,17 +144,26 @@ export function createIndexer(input: {
           if ("embeddingError" in embedded) {
             fileDiagnostics.push(`embedding failed: ${embedded.embeddingError}`)
           }
-          nextChunks[chunk.id] = { ...chunk, ...embedded }
+          fileChunks[chunk.id] = { ...chunk, ...embedded }
         }
+        Object.assign(nextChunks, fileChunks)
         for (const symbol of symbols) {
           nextSymbols[symbol.id] = symbol
         }
-        nextFiles[relativePath] = {
+        const fileRecord = {
           path: relativePath,
           language: parsed.language,
           fingerprint: currentFingerprint,
           chunkIds: chunks.map((chunk) => chunk.id),
           diagnostics: fileDiagnostics,
+        }
+        nextFiles[relativePath] = fileRecord
+        if (run && runStore) {
+          await runStore.writeFileResult(run.runId, {
+            file: fileRecord,
+            chunks: fileChunks,
+            symbols: Object.fromEntries(symbols.map((symbol) => [symbol.id, symbol])),
+          })
         }
       }
 
@@ -134,10 +179,50 @@ export function createIndexer(input: {
       index.metadata.diagnostics = metadataDiagnostics
       index.metadata.status = "ready"
       index.metadata.updatedAt = Date.now()
-      await input.store.write(index)
+      if (run && runStore) {
+        await runStore.activateRun(run.runId, index)
+      } else {
+        await store.write(index)
+      }
       return index
     },
   }
+}
+
+function hasRunStore(
+  store: Store,
+): store is Store & Required<Pick<Store, "beginIndexRun" | "getCompletedFile" | "writeFileResult" | "activateRun">> {
+  return Boolean(store.beginIndexRun && store.getCompletedFile && store.writeFileResult && store.activateRun)
+}
+
+function indexRunConfigHash(index: CastIndex, options: Parameters<typeof createIndexer>[0]["options"]) {
+  return stableHash({
+    schemaVersion: index.metadata.schemaVersion,
+    embeddingModel: index.metadata.embeddingModel,
+    embeddingDimensions: index.metadata.embeddingDimensions,
+    includeGlobs: options.includeGlobs,
+    excludeGlobs: options.excludeGlobs,
+    maxFileBytes: options.maxFileBytes,
+    maxChunkNonWhitespaceChars: options.maxChunkNonWhitespaceChars,
+    chunking: options.chunking,
+  })
+}
+
+function stableHash(value: unknown) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex")
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`
+  }
+  return JSON.stringify(value)
 }
 
 async function skipFileDiagnostic(

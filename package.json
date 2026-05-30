@@ -49,6 +49,7 @@
     "chokidar": "4.0.3",
     "ignore": "7.0.5",
     "minimatch": "10.0.3",
+    "sqlite-vec": "^0.1.9",
     "tree-sitter-bash": "0.25.0",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-html": "0.23.2",

@@ -18,7 +18,12 @@ const CANDIDATE_MULTIPLIER = 3
 const DEFAULT_MIN_FINAL_SCORE = 0.01
 const GLOB_SYNTAX_PATTERN = /[*?[]/
 const REGEXP_SPECIAL_CHAR_PATTERN = /[\\^$.*+?()[\]{}|]/
+const CHARACTER_CLASS_SPECIAL_PATTERN = /[\\\]^]/
 const globRegExpCache = new Map<string, RegExp>()
+
+interface VectorCandidateSource {
+  searchVectorCandidates(queryEmbedding: number[], topK: number, paths?: string[]): Promise<RankedResult[]>
+}
 
 export async function retrieve(input: {
   index: CastIndex
@@ -34,6 +39,7 @@ export async function retrieve(input: {
   generateHyde(query: string): Promise<string>
   rerank?(query: string, documents: string[]): Promise<Array<{ index: number; score: number }>>
   readSource(filePath: string): Promise<string>
+  indexStore?: VectorCandidateSource
 }): Promise<SearchOutput> {
   const topK = input.input.topK ?? input.options.topK
   const maxContextChars = input.input.maxContextChars ?? input.options.maxContextChars
@@ -68,11 +74,18 @@ export async function retrieve(input: {
   }
   const searchCandidateCount = Math.max(
     canUseHybrid && hybrid?.mode === "vector-prefilter"
-      ? vectors.length
+      ? Math.max(vectors.length, chunks.length)
       : rankingTopK * (canUseHybrid ? (hybrid?.vectorCandidateMultiplier ?? 1) : CANDIDATE_MULTIPLIER),
     rankingTopK,
   )
-  const initial = searchVectors(queryVector, vectors, searchCandidateCount)
+  const searchVectorCandidates = async (vector: number[]) => {
+    if (input.indexStore?.searchVectorCandidates) {
+      const candidates = await input.indexStore.searchVectorCandidates(vector, searchCandidateCount, input.input.paths)
+      return candidates.filter((candidate) => chunksById[candidate.id])
+    }
+    return searchVectors(vector, vectors, searchCandidateCount)
+  }
+  const initial = await searchVectorCandidates(queryVector)
   const bestScore = initial[0]?.score
   const initialScores = Object.fromEntries(initial.map((result) => [result.id, result.score]))
   const hyde =
@@ -80,16 +93,21 @@ export async function retrieve(input: {
       ? await input
           .generateHyde(input.input.query)
           .then((text) => input.embed(text))
-          .then((vector) => ({
-            scored: searchVectors(vector, vectors, searchCandidateCount),
+          .then(async (vector) => ({
+            scored: await searchVectorCandidates(vector),
             hydeUsed: true,
             diagnostics: [] as string[],
           }))
-          .catch((error) => ({
-            scored: initial,
-            hydeUsed: false,
-            diagnostics: [`HyDE failed: ${error instanceof Error ? error.message : String(error)}`],
-          }))
+          .catch((error) => {
+            if (isIndexUnavailableError(error)) {
+              throw error
+            }
+            return {
+              scored: initial,
+              hydeUsed: false,
+              diagnostics: [`HyDE failed: ${error instanceof Error ? error.message : String(error)}`],
+            }
+          })
       : { scored: initial, hydeUsed: false, diagnostics: [] }
   let ranked = canUseHybrid
     ? hybridResults({
@@ -202,6 +220,10 @@ export async function retrieve(input: {
     results,
     diagnostics: [...diagnostics, ...hyde.diagnostics],
   }
+}
+
+function isIndexUnavailableError(error: unknown) {
+  return error instanceof Error && error.name === "IndexUnavailableError"
 }
 
 function hybridResults(input: {
@@ -388,31 +410,70 @@ function globToRegExp(glob: string) {
   }
   let pattern = "^"
   for (let index = 0; index < glob.length; index++) {
-    const char = glob[index]
-    const next = glob[index + 1]
-    if (char === "*" && next === "*" && glob[index + 2] === "/") {
-      pattern += "(?:.*/)?"
-      index += 2
-      continue
-    }
-    if (char === "*" && next === "*") {
-      pattern += ".*"
-      index++
-      continue
-    }
-    if (char === "*") {
-      pattern += "[^/]*"
-      continue
-    }
-    if (char === "?") {
-      pattern += "[^/]"
-      continue
-    }
-    pattern += escapeRegExp(char)
+    const part = globPatternPart(glob, index)
+    pattern += part.pattern
+    index = part.endIndex
   }
   const expression = new RegExp(`${pattern}$`)
   globRegExpCache.set(glob, expression)
   return expression
+}
+
+function globPatternPart(glob: string, index: number) {
+  const char = glob[index]
+  const next = glob[index + 1]
+  if (char === "*" && next === "*" && glob[index + 2] === "/") {
+    return { pattern: "(?:.*/)?", endIndex: index + 2 }
+  }
+  if (char === "*" && next === "*") {
+    return { pattern: ".*", endIndex: index + 1 }
+  }
+  if (char === "*") {
+    return { pattern: "[^/]*", endIndex: index }
+  }
+  if (char === "?") {
+    return { pattern: "[^/]", endIndex: index }
+  }
+  if (char === "[") {
+    return globCharacterClass(glob, index) ?? { pattern: escapeRegExp(char), endIndex: index }
+  }
+  if (char === "\\" && next) {
+    return { pattern: escapeRegExp(next), endIndex: index + 1 }
+  }
+  return { pattern: escapeRegExp(char), endIndex: index }
+}
+
+function globCharacterClass(glob: string, startIndex: number) {
+  let endIndex = -1
+  for (let index = startIndex + 1; index < glob.length; index++) {
+    if (glob[index] === "]" && glob[index - 1] !== "\\") {
+      endIndex = index
+      break
+    }
+  }
+  if (endIndex <= startIndex + 1) {
+    return
+  }
+
+  const content = glob.slice(startIndex + 1, endIndex)
+  if (content.includes("/")) {
+    return
+  }
+
+  return { pattern: `[${escapeCharacterClassContent(content)}]`, endIndex }
+}
+
+function escapeCharacterClassContent(content: string) {
+  let escaped = ""
+  for (let index = 0; index < content.length; index++) {
+    const char = content[index]
+    if (char === "-" && index > 0 && index < content.length - 1) {
+      escaped += char
+      continue
+    }
+    escaped += CHARACTER_CLASS_SPECIAL_PATTERN.test(char) ? `\\${char}` : char
+  }
+  return escaped
 }
 
 function escapeRegExp(char: string) {

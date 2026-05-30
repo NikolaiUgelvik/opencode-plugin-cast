@@ -194,7 +194,9 @@ Lexical stats are persisted in the index cache. Older or missing cache data degr
 
 ## Cache
 
-The index is stored outside the repository. The default cache directory is `${XDG_CACHE_HOME:-~/.cache}/opencode/cast`.
+The index is stored outside the repository. The default cache directory is `${XDG_CACHE_HOME:-~/.cache}/opencode/cast`. Each project cache is stored at `<cacheDir>/<cacheKey>/index.sqlite`.
+
+Older `index.json` caches are ignored and are not migrated. If `sqlite-vec` cannot be loaded or initialized, the search tools surface a diagnostic instead of falling back to another cache format.
 
 By default the indexer scans regular, non-gitignored worktree files, skips generated/build directories such as `.git`, `node_modules`, `dist`, `build`, and `.cache`, excludes common binary/archive/lockfile patterns, skips probable binary files, and skips files larger than `maxFileBytes` (`2097152`, 2 MiB). Skipped binary and oversized files are reported in index diagnostics.
 

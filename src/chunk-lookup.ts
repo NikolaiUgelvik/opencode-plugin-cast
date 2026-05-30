@@ -9,6 +9,12 @@ async function getChunkById(input: {
   const diagnostics = [...input.index.metadata.diagnostics]
   const chunk = input.index.chunks[input.input.id]
   if (!chunk) {
+    if (input.index.metadata.status !== "ready") {
+      return {
+        status: input.index.metadata,
+        diagnostics: [...diagnostics, `index unavailable: ${input.index.metadata.status}`],
+      }
+    }
     return {
       status: input.index.metadata,
       diagnostics: [...diagnostics, `chunk not found: ${input.input.id}`],

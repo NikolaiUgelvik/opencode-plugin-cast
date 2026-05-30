@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { createIndexer as createScannerIndexer } from "./scanner.js"
 import { createEmptyIndex, createIndexStore } from "./store.js"
-import type { ChunkingOptions } from "./types.js"
+import type { CastIndex, ChunkingOptions, ChunkRecord, FileRecord, SymbolRecord } from "./types.js"
 
 const DEFAULT_CHUNKING_OPTIONS: ChunkingOptions = { overlap: 0, expansion: false, minSemanticNonWhitespaceChars: 8 }
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -14,6 +14,12 @@ type TestCreateIndexerInput = Omit<CreateIndexerInput, "options"> & {
     chunking?: ChunkingOptions
     maxFileBytes?: number
   }
+}
+type ResumableStore = ReturnType<typeof createIndexStore> & {
+  writeFileResult(
+    runId: string,
+    fileResult: { file: FileRecord; chunks: Record<string, ChunkRecord>; symbols: Record<string, SymbolRecord> },
+  ): Promise<void>
 }
 const createIndexer = (input: TestCreateIndexerInput) =>
   createScannerIndexer({
@@ -26,6 +32,191 @@ const createIndexer = (input: TestCreateIndexerInput) =>
   })
 
 describe("createIndexer", () => {
+  test("resumes a first indexing run after completed files were persisted", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      await Bun.write(path.join(dir, "a.ts"), "export const a = 1\n")
+      await Bun.write(path.join(dir, "b.ts"), "export const b = 2\n")
+      let parseCalls = 0
+      let embedCalls = 0
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }) as ResumableStore
+      const originalWriteFileResult = store.writeFileResult.bind(store)
+      let fileWrites = 0
+      store.writeFileResult = async (runId, fileResult) => {
+        await originalWriteFileResult(runId, fileResult)
+        fileWrites++
+        if (fileWrites === 1) {
+          throw new Error("simulated crash after first file")
+        }
+      }
+      const options = {
+        maxChunkNonWhitespaceChars: 2000,
+        includeGlobs: ["**/*.ts"],
+        excludeGlobs: [],
+        topK: 5,
+        maxContextChars: 12_000,
+      }
+      const makeIndexer = () =>
+        createIndexer({
+          worktree: dir,
+          options,
+          store,
+          parse: async () => {
+            parseCalls++
+            return { language: "typescript", root: undefined }
+          },
+          embed: async () => {
+            embedCalls++
+            return [1, 0]
+          },
+        })
+
+      await expect(makeIndexer().refresh()).rejects.toThrow("simulated crash after first file")
+      store.writeFileResult = originalWriteFileResult
+      const index = await makeIndexer().refresh()
+
+      expect(Object.keys(index.files).sort()).toEqual(["a.ts", "b.ts"])
+      expect(parseCalls).toBe(2)
+      expect(embedCalls).toBe(2)
+      expect(
+        (await createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }).read()).metadata.status,
+      ).toBe("ready")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  test("reprocesses a resumed completed file with embedding errors", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      await Bun.write(path.join(dir, "a.ts"), "export const a = 1\n")
+      let parseCalls = 0
+      let embedCalls = 0
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }) as ResumableStore
+      const originalWriteFileResult = store.writeFileResult.bind(store)
+      let fileWrites = 0
+      store.writeFileResult = async (runId, fileResult) => {
+        fileWrites++
+        if (fileWrites === 1) {
+          await originalWriteFileResult(runId, {
+            ...fileResult,
+            chunks: Object.fromEntries(
+              Object.entries(fileResult.chunks).map(([id, chunk]) => [
+                id,
+                { ...chunk, embedding: undefined, embeddingError: "temporary embed failure" },
+              ]),
+            ),
+          })
+          throw new Error("simulated crash after degraded file")
+        }
+        await originalWriteFileResult(runId, fileResult)
+      }
+      const options = {
+        maxChunkNonWhitespaceChars: 2000,
+        includeGlobs: ["**/*.ts"],
+        excludeGlobs: [],
+        topK: 5,
+        maxContextChars: 12_000,
+      }
+      const makeIndexer = () =>
+        createIndexer({
+          worktree: dir,
+          options,
+          store,
+          parse: async () => {
+            parseCalls++
+            return { language: "typescript", root: undefined }
+          },
+          embed: async () => {
+            embedCalls++
+            return [1, 0]
+          },
+        })
+
+      await expect(makeIndexer().refresh()).rejects.toThrow("simulated crash after degraded file")
+      const index = await makeIndexer().refresh()
+
+      expect(parseCalls).toBe(2)
+      expect(embedCalls).toBe(2)
+      expect(Object.values(index.chunks)[0].embedding).toEqual([1, 0])
+      expect(Object.values(index.chunks)[0].embeddingError).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  test("keeps an old active SQLite run readable when refresh crashes before activation", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      await Bun.write(path.join(dir, "old.ts"), "export const old = true\n")
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }) as ResumableStore
+      const oldIndex = createEmptyIndex({
+        projectId: "p",
+        worktree: dir,
+        cacheKey: "key",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      oldIndex.metadata.status = "ready"
+      oldIndex.metadata.embeddingDimensions = 2
+      oldIndex.files["old.ts"] = {
+        path: "old.ts",
+        language: "typescript",
+        fingerprint: "old",
+        chunkIds: ["old"],
+        diagnostics: [],
+      }
+      oldIndex.chunks.old = {
+        id: "old",
+        filePath: "old.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+        text: "function old() {}",
+        nonWhitespaceChars: 10,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+        embedding: [1, 0],
+      }
+      await store.write(oldIndex)
+      await Bun.write(path.join(dir, "old.ts"), "export const old = false\n")
+      const originalWriteFileResult = store.writeFileResult.bind(store)
+      store.writeFileResult = async (runId, fileResult) => {
+        await originalWriteFileResult(runId, fileResult)
+        throw new Error("simulated crash before activation")
+      }
+
+      const indexer = createIndexer({
+        worktree: dir,
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
+        store,
+        parse: async () => ({ language: "typescript", root: undefined }),
+        embed: async () => [0, 1],
+      })
+
+      await expect(indexer.refresh()).rejects.toThrow("simulated crash before activation")
+      const cached = await createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }).read()
+
+      expect(Object.keys(cached.files)).toEqual(["old.ts"])
+      expect(cached.files["old.ts"].fingerprint).toBe("old")
+      expect((cached as CastIndex).chunks.old.embedding).toEqual([1, 0])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
   test("indexes changed files and removes deleted files", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
     try {

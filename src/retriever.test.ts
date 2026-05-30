@@ -30,6 +30,51 @@ function addLexicalStats(index: CastIndex) {
 }
 
 describe("retrieve", () => {
+  test("uses store vector candidates without hydrated embeddings", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function a() {}",
+      indexStore: {
+        searchVectorCandidates: async () => [{ id: "c1", score: 0.75 }],
+      },
+    } as Parameters<typeof retrieve>[0] & {
+      indexStore: {
+        searchVectorCandidates(
+          queryEmbedding: number[],
+          topK: number,
+          paths?: string[],
+        ): Promise<Array<{ id: string; score: number }>>
+      }
+    })
+
+    expect(output.results[0].filePath).toBe("a.ts")
+    expect(output.results[0].score).toBe(0.75)
+  })
+
   test("returns normal embedding results without HyDE above threshold", async () => {
     const index = createEmptyIndex({
       projectId: "p",
@@ -228,6 +273,19 @@ describe("retrieve", () => {
       childChunkIds: [],
       embedding: [0.9, 0],
     }
+    index.chunks["src/c.ts"] = {
+      id: "src/c.ts",
+      filePath: "src/c.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+      text: "function c() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0.7, 0.7],
+    }
     index.chunks["test/c.ts"] = {
       id: "test/c.ts",
       filePath: "test/c.ts",
@@ -266,10 +324,19 @@ describe("retrieve", () => {
       generateHyde: async () => "hyde text",
       readSource: async (filePath) => index.chunks[filePath].text,
     })
+    const bracketGlob = await retrieve({
+      index,
+      input: { query: "a", topK: 3, includeParents: true, maxContextChars: 100, paths: ["src/[ab].ts"] },
+      options: { topK: 3, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath].text,
+    })
 
     expect(exact.results.map((result) => result.filePath)).toEqual(["test/c.ts"])
-    expect(directory.results.map((result) => result.filePath)).toEqual(["src/a.ts", "src/nested/b.ts"])
-    expect(glob.results.map((result) => result.filePath)).toEqual(["src/a.ts", "src/nested/b.ts"])
+    expect(directory.results.map((result) => result.filePath)).toEqual(["src/a.ts", "src/nested/b.ts", "src/c.ts"])
+    expect(glob.results.map((result) => result.filePath)).toEqual(["src/a.ts", "src/nested/b.ts", "src/c.ts"])
+    expect(bracketGlob.results.map((result) => result.filePath)).toEqual(["src/a.ts"])
   })
 
   test("uses HyDE when best score is below threshold", async () => {

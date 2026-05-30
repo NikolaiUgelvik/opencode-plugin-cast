@@ -74,6 +74,431 @@ describe("cast plugin", () => {
     expect(result.metadata).toEqual({ configured: false })
   })
 
+  test("store creation failure registers tools and reports unavailable diagnostics", async () => {
+    let indexerCreated = false
+    const plugin = createCastPluginForTest({
+      createStore: () => {
+        throw new Error("sqlite-vec failed to load")
+      },
+      createIndexer: () => {
+        indexerCreated = true
+        return { refresh: async () => emptyReadyIndex() }
+      },
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const searchResult = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+    const chunkResult = await semanticGetChunkTool(hooks).execute({ id: "c1" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(indexerCreated).toBe(false)
+    expect(typeof searchResult).toBe("object")
+    expect(typeof chunkResult).toBe("object")
+    if (typeof searchResult === "string" || typeof chunkResult === "string") {
+      throw new Error("expected object tool results")
+    }
+    expect(searchResult.output).toContain("sqlite-vec failed to load")
+    expect(searchResult.metadata).toEqual({ configured: false })
+    expect(chunkResult.output).toContain("sqlite-vec failed to load")
+    expect(chunkResult.metadata).toEqual({ configured: false })
+  })
+
+  test("lazy store read failure returns unavailable diagnostics from both tools", async () => {
+    const store = {
+      read: async () => {
+        throw new Error("sqlite-vec failed to load lazily")
+      },
+      write: async () => undefined,
+    }
+    const plugin = createCastPluginForTest({
+      createStore: () => store,
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const searchResult = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+    const chunkResult = await semanticGetChunkTool(hooks).execute({ id: "c1" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof searchResult).toBe("object")
+    expect(typeof chunkResult).toBe("object")
+    if (typeof searchResult === "string" || typeof chunkResult === "string") {
+      throw new Error("expected object tool results")
+    }
+    expect(searchResult.output).toContain("sqlite-vec failed to load lazily")
+    expect(chunkResult.output).toContain("sqlite-vec failed to load lazily")
+  })
+
+  test("lazy failed to open database read failure returns unavailable diagnostics from both tools", async () => {
+    const store = {
+      read: async () => {
+        throw new Error("failed to open database")
+      },
+      write: async () => undefined,
+    }
+    const plugin = createCastPluginForTest({
+      createStore: () => store,
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const searchResult = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+    const chunkResult = await semanticGetChunkTool(hooks).execute({ id: "c1" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof searchResult).toBe("object")
+    expect(typeof chunkResult).toBe("object")
+    if (typeof searchResult === "string" || typeof chunkResult === "string") {
+      throw new Error("expected object tool results")
+    }
+    expect(searchResult.output).toContain("failed to open database")
+    expect(chunkResult.output).toContain("failed to open database")
+  })
+
+  test("unrelated lazy read failures throw every time without poisoning store availability", async () => {
+    const plugin = createCastPluginForTest({
+      createStore: () => ({
+        read: async () => {
+          throw new Error("permission denied")
+        },
+        write: async () => undefined,
+      }),
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+
+    await expect(
+      semanticSearchTool(hooks).execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never),
+    ).rejects.toThrow("permission denied")
+    await expect(
+      semanticGetChunkTool(hooks).execute({ id: "c1" }, { worktree: "/repo", directory: "/repo" } as never),
+    ).rejects.toThrow("permission denied")
+  })
+
+  test("restore failed read failures are not classified as store unavailable", async () => {
+    const plugin = createCastPluginForTest({
+      createStore: () => ({
+        read: async () => {
+          throw new Error("restore failed")
+        },
+        write: async () => undefined,
+      }),
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+
+    await expect(
+      semanticSearchTool(hooks).execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never),
+    ).rejects.toThrow("restore failed")
+    await expect(
+      semanticGetChunkTool(hooks).execute({ id: "c1" }, { worktree: "/repo", directory: "/repo" } as never),
+    ).rejects.toThrow("restore failed")
+  })
+
+  test("lazy store candidate failure returns unavailable diagnostics from search", async () => {
+    const index = emptyReadyIndex()
+    const plugin = createCastPluginForTest({
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init.body))
+        return Response.json({ data: [{ embedding: String(body.input).includes("session") ? [1, 0] : [0, 1] }] })
+      },
+      createStore: () => ({
+        read: async () => index,
+        write: async () => undefined,
+        searchVectorCandidates: async () => {
+          throw new Error("sqlite-vec failed to load for candidates")
+        },
+      }),
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const result = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof result).toBe("object")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
+    expect(result.output).toContain("sqlite-vec failed to load for candidates")
+    expect(result.metadata).toEqual({ configured: false })
+  })
+
+  test("HyDE retry store candidate failure returns unavailable diagnostics from search", async () => {
+    const index = emptyReadyIndex()
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+    }
+    let candidateSearches = 0
+    const plugin = createCastPluginForTest({
+      fetch: async (url, init) => {
+        const body = JSON.parse(String(init.body))
+        if (url.endsWith("/chat/completions")) {
+          return Response.json({ choices: [{ message: { content: "hyde text" } }] })
+        }
+        return Response.json({ data: [{ embedding: String(body.input).includes("hyde") ? [0, 1] : [1, 0] }] })
+      },
+      createStore: () => ({
+        read: async () => index,
+        write: async () => undefined,
+        searchVectorCandidates: async () => {
+          candidateSearches += 1
+          if (candidateSearches === 1) {
+            return [{ id: "c1", score: 0 }]
+          }
+          throw new Error("sqlite-vec failed to load during HyDE candidates")
+        },
+      }),
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+      hyde: { baseURL: "https://example.test/v1", model: "hyde", enabled: true, threshold: 0.5 },
+    })
+    const result = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof result).toBe("object")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
+    expect(result.output).toContain("index unavailable")
+    expect(result.output).toContain("sqlite-vec failed to load during HyDE candidates")
+    expect(result.output).not.toContain("HyDE failed")
+    expect(result.metadata).toEqual({ configured: false })
+    expect(candidateSearches).toBe(2)
+  })
+
+  test("lazy sqlite-vec background failure from store write is recorded and prevents repeated refresh attempts", async () => {
+    let refreshes = 0
+    const plugin = createCastPluginForTest({
+      createStore: () => ({
+        read: async () => emptyReadyIndex(),
+        write: async () => {
+          throw new Error("sqlite-vec failed to load during write")
+        },
+      }),
+      createIndexer: (input) => ({
+        refresh: async () => {
+          refreshes += 1
+          await input.store.write(emptyReadyIndex())
+        },
+      }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const result = await semanticSearchTool(hooks).execute({ query: "session", refresh: true }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof result).toBe("object")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
+    expect(result.output).toContain("sqlite-vec failed to load during write")
+    expect(result.metadata).toEqual({ configured: false })
+    expect(refreshes).toBe(1)
+  })
+
+  test("forced refresh surfaces unrelated permission errors", async () => {
+    let refreshes = 0
+    const plugin = createCastPluginForTest({
+      createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
+      createIndexer: () => ({
+        refresh: async () => {
+          refreshes += 1
+          if (refreshes === 1) {
+            return emptyReadyIndex()
+          }
+          throw new Error("permission denied")
+        },
+      }),
+      retrieve: async () => ({
+        status: searchStatus(),
+        results: [],
+        diagnostics: [],
+      }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+
+    await expect(
+      semanticSearchTool(hooks).execute({ query: "session", refresh: true }, {
+        worktree: "/repo",
+        directory: "/repo",
+      } as never),
+    ).rejects.toThrow("permission denied")
+    expect(refreshes).toBe(2)
+  })
+
+  test("forced refresh surfaces unrelated database errors from indexer", async () => {
+    let refreshes = 0
+    const plugin = createCastPluginForTest({
+      createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
+      createIndexer: () => ({
+        refresh: async () => {
+          refreshes += 1
+          if (refreshes === 1) {
+            return emptyReadyIndex()
+          }
+          throw new Error("database permissions failed")
+        },
+      }),
+      retrieve: async () => ({
+        status: searchStatus(),
+        results: [],
+        diagnostics: [],
+      }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+
+    await expect(
+      semanticSearchTool(hooks).execute({ query: "session", refresh: true }, {
+        worktree: "/repo",
+        directory: "/repo",
+      } as never),
+    ).rejects.toThrow("database permissions failed")
+    expect(refreshes).toBe(2)
+  })
+
+  test("background refresh permission errors do not mark the index unavailable", async () => {
+    const plugin = createCastPluginForTest({
+      createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
+      createIndexer: () => ({
+        refresh: async () => {
+          throw new Error("permission denied")
+        },
+      }),
+      retrieve: async () => ({
+        status: searchStatus(),
+        results: [],
+        diagnostics: [],
+      }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const result = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof result).toBe("object")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
+    expect(result.output).not.toContain("index unavailable")
+    expect(result.output).not.toContain("permission denied")
+    expect(result.metadata).toEqual({
+      hydeUsed: false,
+      rerankUsed: false,
+      resultCount: 0,
+      minFinalScore: 0.01,
+      filteredCount: 0,
+    })
+  })
+
+  test("background refresh sqlite scanner bugs do not mark the index unavailable", async () => {
+    const plugin = createCastPluginForTest({
+      createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
+      createIndexer: () => ({
+        refresh: async () => {
+          throw new Error("sqlite scanner bug")
+        },
+      }),
+      retrieve: async () => ({
+        status: searchStatus(),
+        results: [],
+        diagnostics: [],
+      }),
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+    const result = await semanticSearchTool(hooks).execute({ query: "session" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(typeof result).toBe("object")
+    if (typeof result === "string") {
+      throw new Error("expected object tool result")
+    }
+    expect(result.output).not.toContain("index unavailable")
+    expect(result.output).not.toContain("sqlite scanner bug")
+  })
+
+  test("retrieval database errors are not classified as store unavailable", async () => {
+    const plugin = createCastPluginForTest({
+      createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+      retrieve: async () => {
+        throw new Error("database rerank failed")
+      },
+    })
+
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+
+    await expect(
+      semanticSearchTool(hooks).execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never),
+    ).rejects.toThrow("database rerank failed")
+  })
+
   test("configured semantic_get_chunk reads the cached index and returns chunk output", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-plugin-"))
     try {
@@ -192,6 +617,43 @@ describe("cast plugin", () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  test("semantic_search_code wires embedding dimensions and store candidates into retrieve", async () => {
+    const store = {
+      read: async () => emptyReadyIndex(),
+      write: async () => undefined,
+      searchVectorCandidates: async () => [{ id: "c1", score: 1 }],
+    }
+    const storeInputs: Array<{ cacheDir: string; cacheKey: string; embeddingDimensions?: number }> = []
+    let retrieveIndexStore: unknown
+    let retrieveCandidates: unknown
+    const plugin = createCastPluginForTest({
+      createStore: (input) => {
+        storeInputs.push(input)
+        return store
+      },
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+      retrieve: async (input) => {
+        retrieveIndexStore = input.indexStore
+        retrieveCandidates = await input.indexStore?.searchVectorCandidates([1], 1)
+        return {
+          status: searchStatus(),
+          results: [],
+          diagnostics: [],
+        }
+      },
+    })
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed", dimensions: 2 },
+    })
+
+    await semanticSearchTool(hooks).execute({ query: "session" }, { worktree: "/repo", directory: "/repo" } as never)
+
+    expect(storeInputs[0].embeddingDimensions).toBe(2)
+    expect(retrieveIndexStore).toBeObject()
+    expect(retrieveIndexStore).not.toBe(store)
+    expect(retrieveCandidates).toEqual([{ id: "c1", score: 1 }])
   })
 
   test("refresh true forces an additional refresh before searching", async () => {
