@@ -258,9 +258,18 @@ describe("retrieve", () => {
       generateHyde: async () => "hyde text",
       readSource: async (filePath) => index.chunks[filePath].text,
     })
+    const glob = await retrieve({
+      index,
+      input: { query: "a", topK: 3, includeParents: true, maxContextChars: 100, paths: ["src/**/*.ts"] },
+      options: { topK: 3, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath].text,
+    })
 
     expect(exact.results.map((result) => result.filePath)).toEqual(["test/c.ts"])
     expect(directory.results.map((result) => result.filePath)).toEqual(["src/a.ts", "src/nested/b.ts"])
+    expect(glob.results.map((result) => result.filePath)).toEqual(["src/a.ts", "src/nested/b.ts"])
   })
 
   test("uses HyDE when best score is below threshold", async () => {

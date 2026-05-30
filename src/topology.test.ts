@@ -400,6 +400,19 @@ describe("topology", () => {
     )
   })
 
+  test("skips leading separators when building local snippet labels", () => {
+    const chunk = {
+      ...base,
+      id: "chunk:tool",
+      kind: "method",
+      range: { byteStart: 80, byteEnd: 140, lineStart: 5, lineEnd: 8 },
+      text: ",\n  semantic_get_chunk: tool({\n    async execute() {}\n  })",
+      symbolIds: [],
+    } as ChunkRecord
+
+    expect(summarizeTopology(chunk, { [chunk.id]: chunk }, {}).chunk.label).toBe("method semantic_get_chunk: tool({")
+  })
+
   test("uses local fallback labels for symbol-less chunks", () => {
     const chunk = {
       ...base,

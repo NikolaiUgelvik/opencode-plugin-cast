@@ -70,9 +70,9 @@ function buildWindows(
 
   for (const child of nodes) {
     if (nodeNonWhitespace(input, child) > input.maxNonWhitespaceChars) {
-      windows.push(...flushWindow(pending, parentChunkId))
+      const prefix = flushWindow(pending, parentChunkId)
       pending = []
-      windows.push(...splitOversizedNode(input, child))
+      windows.push(...mergePrefixWithFirstSplitWindow(input, prefix, splitOversizedNode(input, child)))
       continue
     }
 
@@ -89,6 +89,22 @@ function buildWindows(
 
   windows.push(...flushWindow(pending, parentChunkId))
   return windows
+}
+
+function mergePrefixWithFirstSplitWindow(
+  input: { source: string; maxNonWhitespaceChars: number },
+  prefix: ChunkWindow[],
+  split: ChunkWindow[],
+) {
+  if (prefix.length !== 1 || !split[0]) {
+    return [...prefix, ...split]
+  }
+
+  if (rangeNonWhitespace(input, prefix[0].byteStart, split[0].byteEnd) > input.maxNonWhitespaceChars) {
+    return [...prefix, ...split]
+  }
+
+  return [mergeWindows(prefix[0], split[0]), ...split.slice(1)]
 }
 
 function splitOversizedNode(

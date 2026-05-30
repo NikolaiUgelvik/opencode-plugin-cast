@@ -12,6 +12,7 @@ const METHOD_NAME_PATTERN = /(?:async\s+)?([\p{L}_$][\p{L}\p{N}_$]*)\s*\(/u
 const PROPERTY_NAME_PATTERN =
   /^\s*([\p{L}_$][\p{L}\p{N}_$]*)\s*:\s*(?:[\p{L}_$][\p{L}\p{N}_$]*\s*\(|async\s+|function\b|\()/u
 const TEST_CALL_NAME_PATTERN = /^\s*(?:test|it)\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/u
+const LEADING_SEPARATOR_PATTERN = /^[,;]\s*/u
 const SNIPPET_LABEL_MAX_LENGTH = 80
 const SNIPPET_LABEL_PREFIX_LENGTH = 77
 
@@ -221,7 +222,7 @@ function rangesTightlyOverlap(symbol: SymbolRecord, chunk: ChunkRecord) {
 function localSnippetLabel(chunk: ChunkRecord) {
   const firstLine = chunk.text
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.trim().replace(LEADING_SEPARATOR_PATTERN, "").trim())
     .find((line) => line.length > 0)
   if (!firstLine) {
     return

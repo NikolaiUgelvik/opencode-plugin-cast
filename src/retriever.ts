@@ -16,6 +16,9 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const CANDIDATE_MULTIPLIER = 3
 const DEFAULT_MIN_FINAL_SCORE = 0.01
+const GLOB_SYNTAX_PATTERN = /[*?[]/
+const REGEXP_SPECIAL_CHAR_PATTERN = /[\\^$.*+?()[\]{}|]/
+const globRegExpCache = new Map<string, RegExp>()
 
 export async function retrieve(input: {
   index: CastIndex
@@ -366,9 +369,54 @@ function matchesPaths(filePath: string, paths: string[] | undefined) {
   if (!paths || paths.length === 0) {
     return true
   }
-  return paths.some(
-    (filter) => filePath === filter || filePath.startsWith(filter.endsWith("/") ? filter : `${filter}/`),
-  )
+  return paths.some((filter) => {
+    if (hasGlobSyntax(filter)) {
+      return globToRegExp(filter).test(filePath)
+    }
+    return filePath === filter || filePath.startsWith(filter.endsWith("/") ? filter : `${filter}/`)
+  })
+}
+
+function hasGlobSyntax(filter: string) {
+  return GLOB_SYNTAX_PATTERN.test(filter)
+}
+
+function globToRegExp(glob: string) {
+  const cached = globRegExpCache.get(glob)
+  if (cached) {
+    return cached
+  }
+  let pattern = "^"
+  for (let index = 0; index < glob.length; index++) {
+    const char = glob[index]
+    const next = glob[index + 1]
+    if (char === "*" && next === "*" && glob[index + 2] === "/") {
+      pattern += "(?:.*/)?"
+      index += 2
+      continue
+    }
+    if (char === "*" && next === "*") {
+      pattern += ".*"
+      index++
+      continue
+    }
+    if (char === "*") {
+      pattern += "[^/]*"
+      continue
+    }
+    if (char === "?") {
+      pattern += "[^/]"
+      continue
+    }
+    pattern += escapeRegExp(char)
+  }
+  const expression = new RegExp(`${pattern}$`)
+  globRegExpCache.set(glob, expression)
+  return expression
+}
+
+function escapeRegExp(char: string) {
+  return REGEXP_SPECIAL_CHAR_PATTERN.test(char) ? `\\${char}` : char
 }
 
 function indexedChunkMatchesSource(source: string, chunk: ChunkRecord) {

@@ -201,6 +201,34 @@ describe("castChunks", () => {
     expect(chunks.every((chunk) => chunk.nonWhitespaceChars <= 8)).toBe(true)
   })
 
+  test("keeps call callee with the following argument window", () => {
+    const source = 'describe("language registry", () => {\n  test("loads", () => {})\n})\n'
+    const argumentsStart = source.indexOf("(")
+    const callbackStart = source.indexOf("() =>")
+    const testStart = source.indexOf("  test")
+    const chunks = castChunks({
+      filePath: "src/a.ts",
+      language: "typescript",
+      source,
+      root: node("program", 0, source.length, [
+        node("call_expression", 0, source.length, [
+          node("identifier", 0, argumentsStart),
+          node("arguments", argumentsStart, source.length, [
+            node("string", argumentsStart + 1, callbackStart - 2),
+            node("arrow_function", callbackStart, source.length - 2, [
+              node("call_expression", testStart, source.length - 3),
+            ]),
+          ]),
+        ]),
+      ]),
+      maxNonWhitespaceChars: 32,
+      chunking: { overlap: 0, expansion: false, minSemanticNonWhitespaceChars: 8 },
+    })
+
+    expect(chunks.map((chunk) => chunk.text)).not.toContain("describe")
+    expect(chunks[0].text).toStartWith("describe(")
+  })
+
   test("defaults to no overlap", () => {
     const source = "function a() {}\nfunction b() {}\nfunction c() {}\n"
     const chunks = castChunks({
