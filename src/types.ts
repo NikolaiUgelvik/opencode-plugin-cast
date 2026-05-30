@@ -123,6 +123,7 @@ export type SearchInput = {
   includeParents?: boolean
   refresh?: boolean
   paths?: string[]
+  minFinalScore?: number
 }
 
 export type TopologyNode = {
@@ -193,7 +194,14 @@ export type SearchResult = {
 }
 
 export type SearchOutput = {
-  status: IndexMetadata & { hydeUsed: boolean; bestScore?: number; rerankUsed: boolean }
+  status: IndexMetadata & {
+    hydeUsed: boolean
+    bestScore?: number
+    rerankUsed: boolean
+    minFinalScore: number
+    filteredCount: number
+    candidateCount: number
+  }
   results: SearchResult[]
   diagnostics: string[]
 }

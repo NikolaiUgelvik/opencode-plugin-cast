@@ -312,11 +312,47 @@ describe("topology", () => {
     ).toEqual({
       chunk: { id: "chunk:method", label: "method run", range: "src/a.ts:3" },
       parent: { id: "chunk:class", label: "class A", range: "src/a.ts:1-5" },
-      children: [{ id: "chunk:block", label: "block chunk", range: "src/a.ts:4" }],
+      children: [{ id: "chunk:block", label: "block body", range: "src/a.ts:4" }],
       previousSibling: { id: "chunk:function", label: "function before", range: "src/a.ts:2" },
       nextSibling: { id: "chunk:file", label: "file src/a.ts", range: "src/a.ts:1-8" },
       symbols: ["class A", "method run"],
     })
+  })
+
+  test("uses local chunk snippets before broad enclosing symbols", () => {
+    const broadSymbol: SymbolRecord = {
+      id: "sym:function:store",
+      name: "store",
+      kind: "function",
+      filePath: "src/plugin.ts",
+      range: { byteStart: 0, byteEnd: 200, lineStart: 1, lineEnd: 10 },
+      childSymbolIds: [],
+    }
+    const chunk = {
+      ...base,
+      id: "chunk:tool",
+      kind: "block",
+      range: { byteStart: 80, byteEnd: 140, lineStart: 5, lineEnd: 8 },
+      text: "semantic_search_code: tool({\n  async execute() {}\n})",
+      symbolIds: [broadSymbol.id],
+    } as ChunkRecord
+
+    expect(summarizeTopology(chunk, { [chunk.id]: chunk }, { [broadSymbol.id]: broadSymbol }).chunk.label).toBe(
+      "block semantic_search_code: tool({",
+    )
+  })
+
+  test("uses local fallback labels for symbol-less chunks", () => {
+    const chunk = {
+      ...base,
+      id: "chunk:return",
+      kind: "block",
+      range: { byteStart: 20, byteEnd: 38, lineStart: 2, lineEnd: 2 },
+      text: "return parseOptions(input)",
+      symbolIds: [],
+    } as ChunkRecord
+
+    expect(summarizeTopology(chunk, { [chunk.id]: chunk }, {}).chunk.label).toBe("block return parseOptions(input)")
   })
 
   test("extracts enclosing class and assigns it to contained chunks", () => {
@@ -351,6 +387,102 @@ describe("topology", () => {
     expect(symbols[0].childSymbolIds).toEqual(["src/a.ts:method:a:12:18"])
     expect(symbols[1].parentSymbolId).toBe("src/a.ts:class:A:0:20")
     expect(chunk.symbolIds).toEqual(["src/a.ts:class:A:0:20", "src/a.ts:method:a:12:18"])
+  })
+
+  test("extracts object property call names as local function symbols", () => {
+    const source = `const tools = {
+  semantic_search_code: tool({
+    async execute() {
+      return "ok"
+    },
+  }),
+}
+`
+    const propertyStart = source.indexOf("semantic_search_code")
+    const propertyEnd = source.indexOf("  }),") + "  })".length
+    const symbols = extractSymbols({
+      filePath: "src/plugin.ts",
+      source,
+      nodes: [{ type: "pair", startIndex: propertyStart, endIndex: propertyEnd, children: [] }],
+    })
+
+    expect(symbols.map((symbol) => `${symbol.kind}:${symbol.name}`)).toEqual(["function:semantic_search_code"])
+  })
+
+  test("extracts test descriptions as local function symbols", () => {
+    const source = `test("filters nonsense results", async () => {
+  expect(true).toBe(true)
+})
+`
+    const symbols = extractSymbols({
+      filePath: "src/retriever.test.ts",
+      source,
+      nodes: [{ type: "call_expression", startIndex: 0, endIndex: source.trimEnd().length, children: [] }],
+    })
+
+    expect(symbols.map((symbol) => `${symbol.kind}:${symbol.name}`)).toEqual(["function:test filters nonsense results"])
+  })
+
+  test("extracts test descriptions containing other quotes", () => {
+    const source = String.raw`test("doesn't overmatch", async () => {
+  expect(true).toBe(true)
+})
+
+test('handles "quoted" words', () => {
+  expect(true).toBe(true)
+})
+
+test("handles \"escaped\" words", () => {
+  expect(true).toBe(true)
+})
+`
+    const secondTestStart = source.indexOf("test('handles")
+    const thirdTestStart = source.indexOf('test("handles')
+    const symbols = extractSymbols({
+      filePath: "src/retriever.test.ts",
+      source,
+      nodes: [
+        { type: "call_expression", startIndex: 0, endIndex: source.indexOf("\n\ntest"), children: [] },
+        {
+          type: "call_expression",
+          startIndex: secondTestStart,
+          endIndex: source.indexOf("\n\ntest", secondTestStart),
+          children: [],
+        },
+        {
+          type: "call_expression",
+          startIndex: thirdTestStart,
+          endIndex: source.trimEnd().length,
+          children: [],
+        },
+      ],
+    })
+
+    expect(symbols.map((symbol) => `${symbol.kind}:${symbol.name}`)).toEqual([
+      "function:test doesn't overmatch",
+      'function:test handles "quoted" words',
+      'function:test handles "escaped" words',
+    ])
+  })
+
+  test("does not extract type property signatures as function symbols", () => {
+    const source = "interface Options {\n  onDone: () => void\n}\n"
+    const propertyStart = source.indexOf("onDone")
+    const propertyEnd = source.indexOf("\n}")
+    const symbols = extractSymbols({
+      filePath: "src/options.ts",
+      source,
+      nodes: [
+        {
+          type: "interface_declaration",
+          startIndex: 0,
+          endIndex: source.trimEnd().length,
+          children: [{ type: "property_signature", startIndex: propertyStart, endIndex: propertyEnd, children: [] }],
+        },
+      ],
+    })
+
+    expect(symbols.map((symbol) => `${symbol.kind}:${symbol.name}`)).toEqual(["interface:Options"])
   })
 
   test("does not assign symbols from another file with overlapping byte ranges", () => {

@@ -9,6 +9,11 @@ const INTERFACE_NAME_PATTERN = /interface\s+([\p{L}_$][\p{L}\p{N}_$]*)/u
 const FUNCTION_DECLARATION_NAME_PATTERN = /function\s+([\p{L}_$][\p{L}\p{N}_$]*)/u
 const FUNCTION_ASSIGNMENT_NAME_PATTERN = /([\p{L}_$][\p{L}\p{N}_$]*)\s*=\s*(?:async\s+)?(?:function|\()/u
 const METHOD_NAME_PATTERN = /(?:async\s+)?([\p{L}_$][\p{L}\p{N}_$]*)\s*\(/u
+const PROPERTY_NAME_PATTERN =
+  /^\s*([\p{L}_$][\p{L}\p{N}_$]*)\s*:\s*(?:[\p{L}_$][\p{L}\p{N}_$]*\s*\(|async\s+|function\b|\()/u
+const TEST_CALL_NAME_PATTERN = /^\s*(?:test|it)\s*\(\s*(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/u
+const SNIPPET_LABEL_MAX_LENGTH = 80
+const SNIPPET_LABEL_PREFIX_LENGTH = 77
 
 export function extractSymbols(input: { filePath: string; source: string; nodes: SyntaxNode[] }) {
   const symbols = input.nodes.flatMap((node) => extractNodeSymbols(input, node, undefined))
@@ -168,12 +173,47 @@ function labelForChunk(chunk: ChunkRecord, symbols: Record<string, SymbolRecord>
   if (chunk.kind === "file") {
     return `file ${chunk.filePath}`
   }
-  const symbol = nearestSymbol(chunk, symbols)
-  return symbol ? `${symbol.kind} ${symbol.name}` : `${chunk.kind} chunk`
+  const localSymbol = nearestLocalSymbol(chunk, symbols)
+  if (localSymbol) {
+    return `${localSymbol.kind} ${localSymbol.name}`
+  }
+  const localLabel = localSnippetLabel(chunk)
+  if (localLabel) {
+    return `${chunk.kind} ${localLabel}`
+  }
+  const enclosingSymbol = nearestEnclosingSymbol(chunk, symbols)
+  return enclosingSymbol ? `${enclosingSymbol.kind} ${enclosingSymbol.name}` : `${chunk.kind} chunk`
 }
 
-function nearestSymbol(chunk: ChunkRecord, symbols: Record<string, SymbolRecord>) {
-  return [...chunk.symbolIds].reverse().flatMap((id) => (symbols[id] ? [symbols[id]] : []))[0]
+function nearestLocalSymbol(chunk: ChunkRecord, symbols: Record<string, SymbolRecord>) {
+  return [...chunk.symbolIds]
+    .reverse()
+    .flatMap((id) => (symbols[id] ? [symbols[id]] : []))
+    .find((symbol) => rangesTightlyOverlap(symbol, chunk))
+}
+
+function nearestEnclosingSymbol(chunk: ChunkRecord, symbols: Record<string, SymbolRecord>) {
+  return [...chunk.symbolIds]
+    .reverse()
+    .flatMap((id) => (symbols[id] ? [symbols[id]] : []))
+    .find((symbol) => symbol.range.byteStart <= chunk.range.byteStart && chunk.range.byteEnd <= symbol.range.byteEnd)
+}
+
+function rangesTightlyOverlap(symbol: SymbolRecord, chunk: ChunkRecord) {
+  return symbol.range.byteStart >= chunk.range.byteStart && symbol.range.byteStart <= chunk.range.byteEnd
+}
+
+function localSnippetLabel(chunk: ChunkRecord) {
+  const firstLine = chunk.text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+  if (!firstLine) {
+    return
+  }
+  return firstLine.length > SNIPPET_LABEL_MAX_LENGTH
+    ? `${firstLine.slice(0, SNIPPET_LABEL_PREFIX_LENGTH)}...`
+    : firstLine
 }
 
 function rangeLabel(chunk: ChunkRecord) {
@@ -195,7 +235,7 @@ function extractNodeSymbols(
   node: SyntaxNode,
   parentSymbolId: string | undefined,
 ): SymbolRecord[] {
-  const kind = symbolKindFor(node.type)
+  const kind = symbolKindFor(input.source, node)
   const symbol = kind
     ? ({
         id: `${input.filePath}:${kind}:${nameFor(input.source, node, kind)}:${node.startIndex}:${node.endIndex}`,
@@ -214,17 +254,29 @@ function extractNodeSymbols(
   ]
 }
 
-function symbolKindFor(type: string): SymbolRecord["kind"] | undefined {
-  if (type.includes("interface")) {
+function symbolKindFor(source: string, node: SyntaxNode): SymbolRecord["kind"] | undefined {
+  if (typeLooksLikeObjectProperty(node.type)) {
+    const text = textForByteSlice(source, node.startIndex, node.endIndex)
+    if (PROPERTY_NAME_PATTERN.test(text)) {
+      return "function"
+    }
+  }
+  if (typeLooksLikeCall(node.type)) {
+    const text = textForByteSlice(source, node.startIndex, node.endIndex)
+    if (TEST_CALL_NAME_PATTERN.test(text)) {
+      return "function"
+    }
+  }
+  if (node.type.includes("interface")) {
     return "interface"
   }
-  if (type.includes("class")) {
+  if (node.type.includes("class")) {
     return "class"
   }
-  if (type.includes("method")) {
+  if (node.type.includes("method")) {
     return "method"
   }
-  if (type.includes("function")) {
+  if (node.type.includes("function")) {
     return "function"
   }
   return
@@ -239,13 +291,28 @@ function nameFor(source: string, node: SyntaxNode, kind: SymbolRecord["kind"]) {
     return text.match(INTERFACE_NAME_PATTERN)?.[1] ?? "anonymous"
   }
   if (kind === "function") {
+    const testName = text.match(TEST_CALL_NAME_PATTERN)?.[2]
     return (
+      (testName ? `test ${unescapeTestName(testName)}` : undefined) ??
+      text.match(PROPERTY_NAME_PATTERN)?.[1] ??
       text.match(FUNCTION_DECLARATION_NAME_PATTERN)?.[1] ??
       text.match(FUNCTION_ASSIGNMENT_NAME_PATTERN)?.[1] ??
       "anonymous"
     )
   }
   return text.match(METHOD_NAME_PATTERN)?.[1] ?? "anonymous"
+}
+
+function unescapeTestName(name: string) {
+  return name.replace(/\\(.)/g, "$1")
+}
+
+function typeLooksLikeObjectProperty(type: string) {
+  return type === "pair" || (type.includes("property") && !type.includes("signature"))
+}
+
+function typeLooksLikeCall(type: string) {
+  return type.includes("call")
 }
 
 function siblingContextId(chunk: ChunkRecord, symbols: Record<string, SymbolRecord>) {

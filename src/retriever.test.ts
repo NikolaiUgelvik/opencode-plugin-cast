@@ -325,7 +325,7 @@ describe("retrieve", () => {
 
     const output = await retrieve({
       index,
-      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100 },
+      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100, minFinalScore: 0 },
       options: { topK: 1, maxContextChars: 100, hyde: { enabled: true, threshold: 0.5 } },
       embed: async () => [1, 0],
       generateHyde: async () => {
@@ -363,6 +363,156 @@ describe("retrieve", () => {
     expect(output.status.hydeUsed).toBe(true)
     expect(output.status.bestScore).toBeUndefined()
     expect(output.results).toEqual([])
+  })
+
+  test("filters zero-score results with the default minFinalScore", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 16, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "nonsense", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function a() {}",
+    })
+
+    expect(output.results).toEqual([])
+    expect(output.status.minFinalScore).toBe(0.01)
+    expect(output.status.filteredCount).toBe(1)
+    expect(output.status.candidateCount).toBe(1)
+  })
+
+  test("allows callers to lower minFinalScore", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 16, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "nonsense", topK: 1, includeParents: true, maxContextChars: 100, minFinalScore: 0 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function a() {}",
+    })
+
+    expect(output.results).toHaveLength(1)
+    expect(output.results[0].finalScore).toBe(0)
+    expect(output.status.minFinalScore).toBe(0)
+    expect(output.status.filteredCount).toBe(0)
+    expect(output.status.candidateCount).toBe(1)
+  })
+
+  test("allows callers to raise minFinalScore", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 16, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100, minFinalScore: 1.1 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function a() {}",
+    })
+
+    expect(output.results).toEqual([])
+    expect(output.status.minFinalScore).toBe(1.1)
+    expect(output.status.filteredCount).toBe(1)
+    expect(output.status.candidateCount).toBe(1)
+  })
+
+  test("clamps negative minFinalScore to zero", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 16, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "nonsense", topK: 1, includeParents: true, maxContextChars: 100, minFinalScore: -1 },
+      options: { topK: 1, maxContextChars: 100, hyde: { enabled: false, threshold: 0.5 } },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function a() {}",
+    })
+
+    expect(output.results).toHaveLength(1)
+    expect(output.results[0].finalScore).toBe(0)
+    expect(output.status.minFinalScore).toBe(0)
+    expect(output.status.filteredCount).toBe(0)
+    expect(output.status.candidateCount).toBe(1)
   })
 
   test("reranks vector candidates after initial ranking", async () => {

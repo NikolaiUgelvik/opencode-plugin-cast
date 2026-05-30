@@ -163,7 +163,13 @@ describe("cast plugin", () => {
         throw new Error("expected object tool result")
       }
       expect(result.title).toBe("Semantic code search: session")
-      expect(result.metadata).toEqual({ hydeUsed: true, rerankUsed: false, resultCount: 1 })
+      expect(result.metadata).toEqual({
+        hydeUsed: true,
+        rerankUsed: false,
+        resultCount: 1,
+        minFinalScore: 0.01,
+        filteredCount: 0,
+      })
       expect(JSON.parse(result.output).results[0].filePath).toBe("code.ts")
       expect(
         fetchCalls.some(
@@ -199,7 +205,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+        status: searchStatus(),
         results: [],
         diagnostics: [],
       }),
@@ -234,7 +240,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+        status: searchStatus(),
         results: [],
         diagnostics: [],
       }),
@@ -287,7 +293,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+        status: searchStatus(),
         results: [],
         diagnostics: [],
       }),
@@ -331,7 +337,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+        status: searchStatus(),
         results: [],
         diagnostics: [],
       }),
@@ -349,7 +355,13 @@ describe("cast plugin", () => {
     if (typeof result === "string") {
       throw new Error("expected object tool result")
     }
-    expect(result.metadata).toEqual({ hydeUsed: false, rerankUsed: false, resultCount: 0 })
+    expect(result.metadata).toEqual({
+      hydeUsed: false,
+      rerankUsed: false,
+      resultCount: 0,
+      minFinalScore: 0.01,
+      filteredCount: 0,
+    })
   })
 
   test("retrieve wiring passes store index, args, OpenAI calls, and worktree source reader", async () => {
@@ -386,7 +398,7 @@ describe("cast plugin", () => {
         }
         seen.source = await input.readSource("nested/source.ts")
         return {
-          status: { ...index.metadata, hydeUsed: true, rerankUsed: true },
+          status: searchStatus(index.metadata, { hydeUsed: true, rerankUsed: true, candidateCount: 1 }),
           results: [{ filePath: "nested/source.ts" } as never],
           diagnostics: [],
         }
@@ -440,7 +452,7 @@ describe("cast plugin", () => {
       retrieve: async (input) => {
         hybrid = input.options.hybrid
         return {
-          status: { ...index.metadata, hydeUsed: false, rerankUsed: false },
+          status: searchStatus(index.metadata),
           results: [],
           diagnostics: [],
         }
@@ -486,7 +498,7 @@ describe("cast plugin", () => {
       retrieve: async (input) => {
         await input.generateHyde("session")
         return {
-          status: { ...index.metadata, hydeUsed: true, rerankUsed: false },
+          status: searchStatus(index.metadata, { hydeUsed: true }),
           results: [],
           diagnostics: [],
         }
@@ -551,7 +563,7 @@ describe("cast plugin", () => {
           errorMessage = error instanceof Error ? error.message : String(error)
         }
         return {
-          status: { ...index.metadata, hydeUsed: false, rerankUsed: false },
+          status: searchStatus(index.metadata),
           results: [],
           diagnostics: [],
         }
@@ -583,7 +595,7 @@ describe("cast plugin", () => {
           rejected = true
         })
         return {
-          status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+          status: searchStatus(),
           results: [],
           diagnostics: [],
         }
@@ -618,7 +630,7 @@ describe("cast plugin", () => {
           rejected = true
         })
         return {
-          status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+          status: searchStatus(),
           results: [],
           diagnostics: [],
         }
@@ -650,7 +662,7 @@ describe("cast plugin", () => {
       },
       createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+        status: searchStatus(),
         results: [],
         diagnostics: [],
       }),
@@ -688,7 +700,7 @@ describe("cast plugin", () => {
       }),
       createStore: () => ({ read: async () => emptyReadyIndex(), write: async () => undefined }),
       retrieve: async () => ({
-        status: { ...emptyReadyIndex().metadata, hydeUsed: false, rerankUsed: false },
+        status: searchStatus(),
         results: [],
         diagnostics: [],
       }),
@@ -725,6 +737,27 @@ function emptyReadyIndex() {
 function recordEventAndReturnIndex(events: string[], event: string) {
   events.push(event)
   return emptyReadyIndex()
+}
+
+function searchStatus(
+  metadata = emptyReadyIndex().metadata,
+  overrides: Partial<{
+    hydeUsed: boolean
+    rerankUsed: boolean
+    minFinalScore: number
+    filteredCount: number
+    candidateCount: number
+  }> = {},
+) {
+  return {
+    ...metadata,
+    hydeUsed: false,
+    rerankUsed: false,
+    minFinalScore: 0.01,
+    filteredCount: 0,
+    candidateCount: 0,
+    ...overrides,
+  }
 }
 
 function semanticSearchTool(hooks: Awaited<ReturnType<typeof castPlugin>>) {

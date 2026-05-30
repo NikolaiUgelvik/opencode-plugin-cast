@@ -15,6 +15,7 @@ import type {
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const CANDIDATE_MULTIPLIER = 3
+const DEFAULT_MIN_FINAL_SCORE = 0.01
 
 export async function retrieve(input: {
   index: CastIndex
@@ -33,6 +34,7 @@ export async function retrieve(input: {
 }): Promise<SearchOutput> {
   const topK = input.input.topK ?? input.options.topK
   const maxContextChars = input.input.maxContextChars ?? input.options.maxContextChars
+  const minFinalScore = Math.max(0, input.input.minFinalScore ?? DEFAULT_MIN_FINAL_SCORE)
   const rerank = input.options.rerank
   const rankingTopK = rerank ? Math.max(topK * rerank.candidateMultiplier, topK) : topK
   const diagnostics = [
@@ -61,13 +63,13 @@ export async function retrieve(input: {
   if (hybrid?.enabled && !canUseHybrid) {
     diagnostics.push("hybrid retrieval requested but lexical data is unavailable; using vector-only retrieval")
   }
-  const candidateCount = Math.max(
+  const searchCandidateCount = Math.max(
     canUseHybrid && hybrid?.mode === "vector-prefilter"
       ? vectors.length
       : rankingTopK * (canUseHybrid ? (hybrid?.vectorCandidateMultiplier ?? 1) : CANDIDATE_MULTIPLIER),
     rankingTopK,
   )
-  const initial = searchVectors(queryVector, vectors, candidateCount)
+  const initial = searchVectors(queryVector, vectors, searchCandidateCount)
   const bestScore = initial[0]?.score
   const initialScores = Object.fromEntries(initial.map((result) => [result.id, result.score]))
   const hyde =
@@ -76,7 +78,7 @@ export async function retrieve(input: {
           .generateHyde(input.input.query)
           .then((text) => input.embed(text))
           .then((vector) => ({
-            scored: searchVectors(vector, vectors, candidateCount),
+            scored: searchVectors(vector, vectors, searchCandidateCount),
             hydeUsed: true,
             diagnostics: [] as string[],
           }))
@@ -122,10 +124,13 @@ export async function retrieve(input: {
       diagnostics.push(`Rerank failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  const candidateResults = ranked.results.slice(0, topK)
+  const filteredRankedResults = candidateResults.filter((result) => result.score >= minFinalScore)
+  const filteredCount = candidateResults.length - filteredRankedResults.length
   const seenParentRanges = new Set<string>()
   const results = (
     await Promise.all(
-      ranked.results.slice(0, topK).flatMap(async (result) => {
+      filteredRankedResults.flatMap(async (result) => {
         const chunk = chunksById[result.id]
         if (!chunk) {
           return []
@@ -182,7 +187,15 @@ export async function retrieve(input: {
     })
 
   return {
-    status: { ...input.index.metadata, hydeUsed: hyde.hydeUsed, bestScore, rerankUsed },
+    status: {
+      ...input.index.metadata,
+      hydeUsed: hyde.hydeUsed,
+      bestScore,
+      rerankUsed,
+      minFinalScore,
+      filteredCount,
+      candidateCount: candidateResults.length,
+    },
     results,
     diagnostics: [...diagnostics, ...hyde.diagnostics],
   }
