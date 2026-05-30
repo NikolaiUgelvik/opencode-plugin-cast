@@ -61,12 +61,12 @@ export function buildLexicalIndex(
   symbols: Record<string, SymbolRecord>,
 ): { lexical: LexicalIndex; chunks: Record<string, ChunkRecord> } {
   const indexedChunks: Record<string, ChunkRecord> = {}
-  const documentFrequencies: Record<string, number> = {}
+  const documentFrequencies: Record<string, number> = Object.create(null)
   let totalLength = 0
 
   for (const [id, chunk] of Object.entries(chunks)) {
     const terms = tokenizeCodeText(textForChunk(chunk, symbols))
-    const termFrequencies: Record<string, number> = {}
+    const termFrequencies: Record<string, number> = Object.create(null)
     for (const term of terms) {
       termFrequencies[term] = (termFrequencies[term] ?? 0) + 1
     }

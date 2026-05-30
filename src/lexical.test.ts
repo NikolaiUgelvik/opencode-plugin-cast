@@ -76,6 +76,18 @@ describe("lexical retrieval", () => {
     expect(indexed.chunks.b.lexical?.termFrequencies.opencode_cast_cache_dir).toBe(1)
   })
 
+  test("counts prototype property names as numeric lexical terms", () => {
+    const { lexical, chunks } = buildLexicalIndex(
+      {
+        a: chunk("a", "src/plugin.ts", "class IndexUnavailableError { constructor(message: string) {} }", []),
+      },
+      {},
+    )
+
+    expect(Object.getOwnPropertyDescriptor(chunks.a.lexical?.termFrequencies, "constructor")?.value).toBe(2)
+    expect(Object.getOwnPropertyDescriptor(lexical.documentFrequencies, "constructor")?.value).toBe(1)
+  })
+
   test("bm25 search prefers exact lexical matches", () => {
     const { lexical, chunks } = buildLexicalIndex(
       {
