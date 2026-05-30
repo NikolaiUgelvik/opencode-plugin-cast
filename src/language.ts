@@ -23,6 +23,12 @@ const entries: ParserEntry[] = [
       (await import("tree-sitter-go/tree-sitter-go.wasm" as string, { with: { type: "wasm" } })).default,
   },
   {
+    id: "html",
+    extensions: [".html", ".htm"],
+    wasm: async () =>
+      (await import("tree-sitter-html/tree-sitter-html.wasm" as string, { with: { type: "wasm" } })).default,
+  },
+  {
     id: "java",
     extensions: [".java"],
     wasm: async () =>

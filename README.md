@@ -214,7 +214,7 @@ The cache key includes the opencode project id, worktree path, embedding model s
 
 ## Language Coverage
 
-The bundled grammar set targets TypeScript/TSX, JavaScript/JSX, Python, PHP, Go, Rust, Java, Ruby, and Bash. Files without a supported parser are indexed with fallback text chunks.
+The bundled grammar set targets TypeScript/TSX, JavaScript/JSX, Python, PHP, HTML, Go, Rust, Java, Ruby, and Bash. Files without a supported parser are indexed with fallback text chunks.
 
 ## HyDE
 

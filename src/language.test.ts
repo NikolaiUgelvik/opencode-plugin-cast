@@ -6,6 +6,8 @@ describe("language registry", () => {
     expect(languageForPath("src/app.ts")?.id).toBe("typescript")
     expect(languageForPath("src/app.tsx")?.id).toBe("tsx")
     expect(languageForPath("bin/start.sh")?.id).toBe("bash")
+    expect(languageForPath("public/index.html")?.id).toBe("html")
+    expect(languageForPath("templates/page.htm")?.id).toBe("html")
     expect(languageForPath("public/index.php")?.id).toBe("php")
     expect(languageForPath("views/layout.phtml")?.id).toBe("php")
     expect(languageForPath("/home/me/.bashrc")?.id).toBe("bash")
@@ -56,6 +58,15 @@ describe("language registry", () => {
 
     expect(parsed.language).toBe("php")
     expect(parsed.root?.type).toBe("program")
+    expect(parsed.root?.startIndex).toBe(0)
+    expect(parsed.root?.children.length).toBeGreaterThan(0)
+  })
+
+  test("parses HTML source into the shared syntax node shape", async () => {
+    const parsed = await parseSource("public/index.html", "<!doctype html><html><body><h1>Title</h1></body></html>\n")
+
+    expect(parsed.language).toBe("html")
+    expect(parsed.root?.type).toBe("document")
     expect(parsed.root?.startIndex).toBe(0)
     expect(parsed.root?.children.length).toBeGreaterThan(0)
   })
