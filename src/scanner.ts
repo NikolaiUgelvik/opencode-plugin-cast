@@ -52,23 +52,36 @@ export function createIndexer(input: {
     async refresh() {
       const store = input.store
       const index = await store.read()
+      const initialStatus = index.metadata.status
       const canReuseExistingRecords =
         index.metadata.maxChunkNonWhitespaceChars === input.options.maxChunkNonWhitespaceChars &&
         sameChunkingOptions(index.metadata.chunking, input.options.chunking)
-      index.metadata.status = "indexing"
-      index.metadata.worktree = input.worktree
-      index.metadata.maxChunkNonWhitespaceChars = input.options.maxChunkNonWhitespaceChars
-      index.metadata.chunking = input.options.chunking
       const runConfigHash = indexRunConfigHash(index, input.options)
-      const runStore = hasRunStore(store) ? store : undefined
-      const run = runStore
-        ? await runStore.beginIndexRun({ configHash: runConfigHash, metadata: index.metadata })
-        : undefined
+      const runStore = hasRunStore(store) && initialStatus !== "ready" ? store : undefined
       const files = await scanFiles(input.worktree, input.options.includeGlobs, input.options.excludeGlobs)
       const nextFiles: CastIndex["files"] = {}
       const nextChunks: CastIndex["chunks"] = {}
       const nextSymbols: CastIndex["symbols"] = {}
       const metadataDiagnostics: string[] = []
+      let changed = false
+      let run: { runId: string } | undefined
+
+      const markIndexing = () => {
+        index.metadata.status = "indexing"
+        index.metadata.worktree = input.worktree
+        index.metadata.maxChunkNonWhitespaceChars = input.options.maxChunkNonWhitespaceChars
+        index.metadata.chunking = input.options.chunking
+      }
+      const ensureRun = async () => {
+        if (!runStore) {
+          return
+        }
+        if (!run) {
+          markIndexing()
+          run = await runStore.beginIndexRun({ configHash: runConfigHash, metadata: index.metadata })
+        }
+        return run
+      }
 
       for (const relativePath of files) {
         const absolutePath = path.join(input.worktree, relativePath)
@@ -79,8 +92,23 @@ export function createIndexer(input: {
           continue
         }
         const currentFingerprint = await fingerprint(absolutePath)
-        if (run && runStore) {
-          const completed = await runStore.getCompletedFile(run.runId, relativePath, currentFingerprint)
+        const previousFile = index.files[relativePath]
+        if (canReuseFile(index, previousFile, relativePath, currentFingerprint, canReuseExistingRecords)) {
+          nextFiles[relativePath] = previousFile
+          for (const chunkId of previousFile.chunkIds) {
+            if (index.chunks[chunkId]) {
+              nextChunks[chunkId] = index.chunks[chunkId]
+            }
+          }
+          for (const symbol of Object.values(index.symbols).filter((symbol) => symbol.filePath === relativePath)) {
+            nextSymbols[symbol.id] = symbol
+          }
+          continue
+        }
+        changed = true
+        const activeRun = await ensureRun()
+        if (activeRun && runStore) {
+          const completed = await runStore.getCompletedFile(activeRun.runId, relativePath, currentFingerprint)
           if (completed) {
             const completedIndex = {
               ...index,
@@ -95,19 +123,6 @@ export function createIndexer(input: {
               continue
             }
           }
-        }
-        const previousFile = index.files[relativePath]
-        if (canReuseFile(index, previousFile, relativePath, currentFingerprint, canReuseExistingRecords)) {
-          nextFiles[relativePath] = previousFile
-          for (const chunkId of previousFile.chunkIds) {
-            if (index.chunks[chunkId]) {
-              nextChunks[chunkId] = index.chunks[chunkId]
-            }
-          }
-          for (const symbol of Object.values(index.symbols).filter((symbol) => symbol.filePath === relativePath)) {
-            nextSymbols[symbol.id] = symbol
-          }
-          continue
         }
 
         const text = await Bun.file(absolutePath).text()
@@ -171,6 +186,18 @@ export function createIndexer(input: {
       }
 
       const lexicalIndex = buildLexicalIndex(nextChunks, nextSymbols)
+      const hasFileSetChange = !sameStringArray(Object.keys(index.files).sort(), Object.keys(nextFiles).sort())
+      const hasDiagnosticsChange = !sameStringArray(index.metadata.diagnostics, metadataDiagnostics)
+      if (
+        index.metadata.status === "ready" &&
+        !changed &&
+        !hasFileSetChange &&
+        !hasDiagnosticsChange &&
+        index.metadata.worktree === input.worktree &&
+        canReuseExistingRecords
+      ) {
+        return index
+      }
 
       index.files = nextFiles
       index.chunks = lexicalIndex.chunks
@@ -184,6 +211,11 @@ export function createIndexer(input: {
       index.metadata.updatedAt = Date.now()
       if (run && runStore) {
         await runStore.activateRun(run.runId, index)
+      } else if (runStore) {
+        const activeRun = await ensureRun()
+        if (activeRun) {
+          await runStore.activateRun(activeRun.runId, index)
+        }
       } else {
         await store.write(index)
       }
@@ -312,6 +344,10 @@ function sameChunkingOptions(left: ChunkingOptions | undefined, right: ChunkingO
     left.expansion === right.expansion &&
     left.minSemanticNonWhitespaceChars === right.minSemanticNonWhitespaceChars
   )
+}
+
+function sameStringArray(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
 function hasDanglingChunkReference(index: CastIndex, chunk: CastIndex["chunks"][string], chunkIds: Set<string>) {

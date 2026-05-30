@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { load as loadSqliteVec } from "sqlite-vec"
 import { cosineSimilarity, createEmptyIndex, createIndexStore, searchVectors } from "./store.js"
 import type { CastIndex, ChunkRecord, FileRecord, SymbolRecord } from "./types.js"
 
@@ -361,6 +362,67 @@ describe("index store", () => {
       const cached = await store.read()
 
       expect(cached.files["old.ts"]).toEqual(oldIndex.files["old.ts"])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("prunes superseded SQLite runs after activating a replacement run", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project", embeddingDimensions: 2 }) as ResumableStore
+      const oldIndex = createEmptyIndex({
+        projectId: "p",
+        worktree: "/repo",
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      oldIndex.metadata.status = "ready"
+      oldIndex.metadata.embeddingDimensions = 2
+      oldIndex.files["old.ts"] = {
+        path: "old.ts",
+        language: "typescript",
+        fingerprint: "old",
+        chunkIds: ["old"],
+        diagnostics: [],
+      }
+      oldIndex.chunks.old = chunk("old", "old.ts", [1, 0])
+      await store.write(oldIndex)
+
+      const newIndex = createEmptyIndex({
+        projectId: "p",
+        worktree: "/repo",
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      newIndex.metadata.status = "ready"
+      newIndex.metadata.embeddingDimensions = 2
+      newIndex.files["new.ts"] = {
+        path: "new.ts",
+        language: "typescript",
+        fingerprint: "new",
+        chunkIds: ["new"],
+        diagnostics: [],
+      }
+      newIndex.chunks.new = chunk("new", "new.ts", [0, 1])
+      const { runId } = await store.beginIndexRun({
+        configHash: "same-config",
+        metadata: { ...newIndex.metadata, status: "indexing" },
+      })
+
+      await store.activateRun(runId, newIndex)
+
+      const db = new Database(path.join(dir, "project", "index.sqlite"))
+      try {
+        loadSqliteVec(db)
+        expect(db.query("select count(*) as count from runs").get()).toEqual({ count: 1 })
+        expect(db.query("select count(*) as count from chunks").get()).toEqual({ count: 1 })
+        expect(db.query("select count(*) as count from chunk_rowids").get()).toEqual({ count: 1 })
+        expect(db.query("select count(*) as count from chunk_vectors").get()).toEqual({ count: 1 })
+        expect(db.query("select id from chunks").get()).toEqual({ id: "new" })
+      } finally {
+        db.close()
+      }
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

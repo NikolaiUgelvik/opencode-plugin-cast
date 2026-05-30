@@ -32,6 +32,15 @@ const createIndexer = (input: TestCreateIndexerInput) =>
     },
   })
 
+function readActiveRunId(cacheDir: string) {
+  const db = new Database(path.join(cacheDir, "key", "index.sqlite"))
+  try {
+    return (db.query("select value from meta where key = 'active_run_id'").get() as { value: string }).value
+  } finally {
+    db.close()
+  }
+}
+
 describe("createIndexer", () => {
   test("resumes a first indexing run after completed files were persisted", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
@@ -83,6 +92,90 @@ describe("createIndexer", () => {
       expect(
         (await createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }).read()).metadata.status,
       ).toBe("ready")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  test("does not activate a replacement SQLite run when files are unchanged", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      await Bun.write(path.join(dir, "a.ts"), "export const a = 1\n")
+      let embedCalls = 0
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 })
+      const indexer = createIndexer({
+        worktree: dir,
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
+        store,
+        parse: async () => ({ language: "typescript", root: undefined }),
+        embed: async () => {
+          embedCalls++
+          return [1, 0]
+        },
+      })
+
+      await indexer.refresh()
+      const firstActiveRunId = readActiveRunId(cacheDir)
+      await indexer.refresh()
+
+      expect(readActiveRunId(cacheDir)).toBe(firstActiveRunId)
+      expect(embedCalls).toBe(1)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  test("updates a changed ready SQLite index without a replacement run", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
+    try {
+      await Bun.write(path.join(dir, "a.ts"), "export const a = 1\n")
+      let beginRuns = 0
+      let writes = 0
+      const store = createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }) as ReturnType<
+        typeof createIndexStore
+      > & {
+        beginIndexRun(input: { configHash: string; metadata: CastIndex["metadata"] }): Promise<{ runId: string }>
+      }
+      const originalBeginIndexRun = store.beginIndexRun.bind(store)
+      const originalWrite = store.write.bind(store)
+      store.beginIndexRun = async (input) => {
+        beginRuns++
+        return originalBeginIndexRun(input)
+      }
+      store.write = async (index) => {
+        writes++
+        return originalWrite(index)
+      }
+      const indexer = createIndexer({
+        worktree: dir,
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
+        store,
+        parse: async () => ({ language: "typescript", root: undefined }),
+        embed: async () => [1, 0],
+      })
+
+      await indexer.refresh()
+      await Bun.write(path.join(dir, "a.ts"), "export const a = 2\n")
+      await indexer.refresh()
+
+      expect(beginRuns).toBe(1)
+      expect(writes).toBe(1)
     } finally {
       await rm(dir, { recursive: true, force: true })
       await rm(cacheDir, { recursive: true, force: true })
@@ -222,7 +315,7 @@ describe("createIndexer", () => {
     }
   })
 
-  test("keeps an old active SQLite run readable when refresh crashes before activation", async () => {
+  test("keeps an old active SQLite run readable when a ready refresh write fails", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
     const cacheDir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-cache-"))
     try {
@@ -258,10 +351,8 @@ describe("createIndexer", () => {
       }
       await store.write(oldIndex)
       await Bun.write(path.join(dir, "old.ts"), "export const old = false\n")
-      const originalWriteFileResult = store.writeFileResult.bind(store)
-      store.writeFileResult = async (runId, fileResult) => {
-        await originalWriteFileResult(runId, fileResult)
-        throw new Error("simulated crash before activation")
+      store.write = async () => {
+        throw new Error("simulated ready refresh write failure")
       }
 
       const indexer = createIndexer({
@@ -278,7 +369,7 @@ describe("createIndexer", () => {
         embed: async () => [0, 1],
       })
 
-      await expect(indexer.refresh()).rejects.toThrow("simulated crash before activation")
+      await expect(indexer.refresh()).rejects.toThrow("simulated ready refresh write failure")
       const cached = await createIndexStore({ cacheDir, cacheKey: "key", embeddingDimensions: 2 }).read()
 
       expect(Object.keys(cached.files)).toEqual(["old.ts"])

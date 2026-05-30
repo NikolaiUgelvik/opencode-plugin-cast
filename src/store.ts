@@ -604,6 +604,7 @@ function activateSqliteRun(db: Database, runId: string, index: CastIndex) {
       runId,
     ])
     db.run("insert or replace into meta (key, value) values ('active_run_id', ?)", [runId])
+    pruneSupersededRuns(db, runId)
   })
   activate(index)
 }
@@ -758,6 +759,15 @@ function deleteRunRecords(db: Database, runId: string) {
   db.run("delete from symbols where run_id = ?", [runId])
   db.run("delete from chunks where run_id = ?", [runId])
   db.run("delete from file_runs where run_id = ?", [runId])
+}
+
+function pruneSupersededRuns(db: Database, activeRunId: string) {
+  const runs = db.query("select id from runs where id != ?").all(activeRunId) as Array<{ id: string }>
+  for (const run of runs) {
+    deleteRunRecords(db, run.id)
+    db.run("delete from runs where id = ?", [run.id])
+  }
+  db.run("delete from files where path not in (select path from file_runs where run_id = ?)", [activeRunId])
 }
 
 function insertSymbol(db: Database, runId: string, symbol: SymbolRecord) {
