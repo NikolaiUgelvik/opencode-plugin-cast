@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { realpath } from "node:fs/promises"
 import path from "node:path"
-import { type Plugin, tool } from "@opencode-ai/plugin"
+import { type Plugin, type ToolContext, tool } from "@opencode-ai/plugin"
 import { getChunkById } from "./chunk-lookup.js"
 import { parseSource } from "./language.js"
 import { createOpenAIClient, type FetchLike } from "./openai.js"
@@ -9,6 +9,32 @@ import { parseOptions } from "./options.js"
 import { retrieve } from "./retriever.js"
 import { createIndexer } from "./scanner.js"
 import { createIndexStore } from "./store.js"
+
+interface OpenCodeHydeClient {
+  session: {
+    create(parameters: { body?: { parentID?: string; title?: string }; query?: { directory?: string } }): Promise<{
+      data?: { id: string }
+      error?: unknown
+    }>
+    prompt(parameters: {
+      path: { id: string }
+      query?: { directory?: string }
+      body?: {
+        model?: { providerID: string; modelID: string }
+        tools?: Record<string, boolean>
+        system?: string
+        parts: Array<{ type: string; text?: string }>
+      }
+    }): Promise<{
+      data?: { parts: Array<{ type: string; text?: string }> }
+      error?: unknown
+    }>
+    delete(parameters: { path: { id: string }; query?: { directory?: string } }): Promise<{
+      data?: boolean
+      error?: unknown
+    }>
+  }
+}
 
 export function createCastPluginForTest(
   dependencies: {
@@ -40,6 +66,7 @@ export function createCastPluginForTest(
         .digest("hex"),
     })
     const client = createOpenAIClient(dependencies.fetch ? { fetch: dependencies.fetch } : {})
+    const sessionModels = new Map<string, { providerID: string; modelID: string }>()
     let refresh: Promise<unknown> | undefined
     let refreshTail = Promise.resolve()
 
@@ -67,7 +94,69 @@ export function createCastPluginForTest(
       queueRefresh()
     }
 
+    const generateOpenCodeHyde = async (query: string, context: ToolContext) => {
+      const model = sessionModels.get(context.sessionID)
+      if (!model) {
+        throw new Error(`No opencode model is tracked for session ${context.sessionID}`)
+      }
+      const opencodeClient = input.client as unknown as OpenCodeHydeClient | undefined
+      if (!opencodeClient?.session) {
+        throw new Error("OpenCode client is not available for HyDE generation")
+      }
+
+      const created = await opencodeClient.session.create({
+        body: { parentID: context.sessionID, title: "OpenCode Cast HyDE" },
+        query: { directory: context.directory },
+      })
+      if (created.error) {
+        throw new Error(`OpenCode HyDE session create failed: ${formatSdkError(created.error)}`)
+      }
+
+      const hydeSessionID = created.data?.id
+      if (!hydeSessionID) {
+        throw new Error("OpenCode HyDE session create returned no session id")
+      }
+      try {
+        const prompted = await opencodeClient.session.prompt({
+          path: { id: hydeSessionID },
+          query: { directory: context.directory },
+          body: {
+            model,
+            tools: {},
+            system:
+              "Write a concise hypothetical code or documentation excerpt that would satisfy the search query. Return only useful search text.",
+            parts: [{ type: "text", text: query }],
+          },
+        })
+        if (prompted.error) {
+          throw new Error(`OpenCode HyDE prompt failed: ${formatSdkError(prompted.error)}`)
+        }
+        if (!prompted.data) {
+          throw new Error("OpenCode HyDE prompt returned no response")
+        }
+
+        const text = prompted.data.parts
+          .filter((part) => part.type === "text" && typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n")
+          .trim()
+        if (!text) {
+          throw new Error("OpenCode HyDE prompt returned no text")
+        }
+        return text
+      } finally {
+        await opencodeClient.session
+          .delete({ path: { id: hydeSessionID }, query: { directory: context.directory } })
+          .catch(() => undefined)
+      }
+    }
+
     return {
+      "chat.message": async (event) => {
+        if (event.model) {
+          sessionModels.set(event.sessionID, event.model)
+        }
+      },
       tool: {
         semantic_search_code: tool({
           description: `
@@ -85,7 +174,7 @@ This tool searches syntax-aware code chunks such as functions, classes, methods,
             refresh: tool.schema.boolean().optional(),
             paths: tool.schema.array(tool.schema.string()).optional(),
           },
-          async execute(args) {
+          async execute(args, context) {
             const embedding = options.embedding
             if (!embedding || options.diagnostics.length > 0) {
               return {
@@ -105,14 +194,14 @@ This tool searches syntax-aware code chunks such as functions, classes, methods,
               options: { ...options, hybrid: options.retrieval.hybrid, rerank: options.rerank },
               embed: (text) => client.embed({ ...embedding, input: text }),
               generateHyde: (query) =>
-                options.hyde.baseURL && options.hyde.model
+                options.hyde.mode === "openai-compatible" && options.hyde.baseURL && options.hyde.model
                   ? client.generateHyde({
                       baseURL: options.hyde.baseURL,
                       apiKey: options.hyde.apiKey,
                       model: options.hyde.model,
                       query,
                     })
-                  : Promise.reject(new Error("HyDE is not configured")),
+                  : generateOpenCodeHyde(query, context),
               rerank: (query, documents) =>
                 options.rerank
                   ? client.rerank({
@@ -175,6 +264,7 @@ Use this after semantic_search_code when you need the exact cached chunk, its pa
         }),
       },
       async dispose() {
+        sessionModels.clear()
         refresh = undefined
         refreshTail = Promise.resolve()
       },
@@ -183,6 +273,20 @@ Use this after semantic_search_code when you need the exact cached chunk, its pa
 }
 
 export const castPlugin = createCastPluginForTest()
+
+function formatSdkError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message
+  }
+  if (typeof error === "string") {
+    return error
+  }
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return String(error)
+  }
+}
 
 async function resolveWorktreePath(worktree: string, filePath: string) {
   const root = path.resolve(worktree)

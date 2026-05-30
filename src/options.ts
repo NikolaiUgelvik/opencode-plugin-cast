@@ -1,6 +1,7 @@
 import path from "node:path"
 import process from "node:process"
 import { z } from "zod"
+import type { HydeOptions } from "./types.js"
 
 const ApiConfig = z.object({
   baseURL: z.string().url().optional(),
@@ -116,9 +117,8 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
       ...result.error.issues.map((issue) => `${[key, ...issue.path].filter(Boolean).join(".")}: ${issue.message}`),
     )
   }
-  const embeddingApiKey = raw.embedding?.apiKey ?? (raw.embedding?.apiKeyEnv ? env[raw.embedding.apiKeyEnv] : undefined)
-  const hydeApiKey = raw.hyde?.apiKey ?? (raw.hyde?.apiKeyEnv ? env[raw.hyde.apiKeyEnv] : undefined) ?? embeddingApiKey
-  const rerankApiKey = raw.rerank?.apiKey ?? (raw.rerank?.apiKeyEnv ? env[raw.rerank.apiKeyEnv] : undefined)
+  const embeddingApiKey = resolveSecret(raw.embedding?.apiKey, raw.embedding?.apiKeyEnv, env)
+  const rerankApiKey = resolveSecret(raw.rerank?.apiKey, raw.rerank?.apiKeyEnv, env)
   const embedding =
     raw.embedding?.baseURL && raw.embedding.model
       ? {
@@ -128,6 +128,18 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
           dimensions: raw.embedding.dimensions,
         }
       : undefined
+  const hasEmbeddingConfig = Boolean(embedding?.baseURL && embedding.model)
+  const hydeHasExplicitOpenAiConfig = Boolean(raw.hyde?.baseURL && raw.hyde?.model)
+  const hydeEnabled = raw.hyde?.enabled ?? hasEmbeddingConfig
+  const hydeMode: HydeOptions["mode"] = hydeHasExplicitOpenAiConfig ? "openai-compatible" : "opencode"
+  const hyde: HydeOptions = {
+    mode: hydeMode,
+    baseURL: hydeMode === "openai-compatible" ? raw.hyde?.baseURL : undefined,
+    apiKey: hydeMode === "openai-compatible" ? resolveSecret(raw.hyde?.apiKey, raw.hyde?.apiKeyEnv, env) : undefined,
+    model: hydeMode === "openai-compatible" ? raw.hyde?.model : undefined,
+    threshold: raw.hyde?.threshold ?? DEFAULT_HYDE_THRESHOLD,
+    enabled: hydeEnabled,
+  }
 
   if (!raw.embedding?.baseURL) {
     diagnostics.push("embedding.baseURL is required")
@@ -138,13 +150,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
 
   return {
     embedding,
-    hyde: {
-      baseURL: raw.hyde?.baseURL ?? raw.embedding?.baseURL,
-      apiKey: hydeApiKey,
-      model: raw.hyde?.model,
-      threshold: raw.hyde?.threshold ?? DEFAULT_HYDE_THRESHOLD,
-      enabled: raw.hyde?.enabled ?? Boolean(raw.hyde?.model),
-    },
+    hyde,
     rerank:
       raw.rerank?.baseURL && raw.rerank.model
         ? {
@@ -178,6 +184,14 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
     excludeGlobs: raw.excludeGlobs ?? [],
     diagnostics,
   }
+}
+
+function resolveSecret(
+  value: string | undefined,
+  envName: string | undefined,
+  env: Record<string, string | undefined>,
+) {
+  return value ?? (envName ? env[envName] : undefined)
 }
 
 function parseApiConfig(input: unknown) {

@@ -150,7 +150,7 @@ describe("cast plugin", () => {
       const hooks = await plugin({ ...input, directory: dir, worktree: dir } as never, {
         cacheDir: path.join(dir, ".cache"),
         embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
-        hyde: { model: "hyde", threshold: 1, enabled: true },
+        hyde: { baseURL: "https://example.test/v1", model: "hyde", threshold: 1, enabled: true },
       })
 
       const result = await semanticSearchTool(hooks).execute(
@@ -398,7 +398,7 @@ describe("cast plugin", () => {
       await Bun.write(path.join(dir, "nested", "source.ts"), "source text")
       const hooks = await plugin({ ...input, directory: dir, worktree: dir } as never, {
         embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
-        hyde: { model: "hyde", enabled: true },
+        hyde: { baseURL: "https://example.test/v1", model: "hyde", enabled: true },
         rerank: { baseURL: "https://openrouter.ai/api/v1", apiKey: "rerank-key", model: "cohere/rerank-4-fast" },
       })
       await semanticSearchTool(hooks).execute(
@@ -475,6 +475,100 @@ describe("cast plugin", () => {
       vectorWeight: 7,
       bm25Weight: 11,
     })
+  })
+
+  test("chat.message records the latest model for opencode HyDE fallback", async () => {
+    const index = emptyReadyIndex()
+    const fakeClient = createFakeClient()
+    const plugin = createCastPluginForTest({
+      createIndexer: () => ({ refresh: async () => index }),
+      createStore: () => ({ read: async () => index, write: async () => undefined }),
+      retrieve: async (input) => {
+        await input.generateHyde("session")
+        return {
+          status: { ...index.metadata, hydeUsed: true, rerankUsed: false },
+          results: [],
+          diagnostics: [],
+        }
+      },
+    })
+    const hooks = await plugin({ ...input, client: fakeClient.client } as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
+      hyde: { enabled: true, threshold: 1 },
+    })
+
+    await hooks["chat.message"]?.(
+      {
+        sessionID: "s1",
+        messageID: "m1",
+        agent: "build",
+        model: { providerID: "local", modelID: "qwen3.6-27b-mtp" },
+      },
+      {} as never,
+    )
+    await semanticSearchTool(hooks).execute({ query: "session" }, {
+      sessionID: "s1",
+      directory: "/repo",
+      worktree: "/repo",
+    } as never)
+
+    expect(fakeClient.calls).toEqual([
+      {
+        type: "create",
+        parameters: {
+          body: { parentID: "s1", title: "OpenCode Cast HyDE" },
+          query: { directory: "/repo" },
+        },
+      },
+      {
+        type: "prompt",
+        parameters: {
+          path: { id: "hyde-session" },
+          query: { directory: "/repo" },
+          body: {
+            model: { providerID: "local", modelID: "qwen3.6-27b-mtp" },
+            tools: {},
+            system: expect.stringContaining("hypothetical"),
+            parts: [{ type: "text", text: "session" }],
+          },
+        },
+      },
+      { type: "delete", parameters: { path: { id: "hyde-session" }, query: { directory: "/repo" } } },
+    ])
+  })
+
+  test("opencode HyDE fallback reports a clear error when no model was tracked", async () => {
+    const index = emptyReadyIndex()
+    let errorMessage = ""
+    const fakeClient = createFakeClient()
+    const plugin = createCastPluginForTest({
+      createIndexer: () => ({ refresh: async () => index }),
+      createStore: () => ({ read: async () => index, write: async () => undefined }),
+      retrieve: async (input) => {
+        try {
+          await input.generateHyde("session")
+        } catch (error) {
+          errorMessage = error instanceof Error ? error.message : String(error)
+        }
+        return {
+          status: { ...index.metadata, hydeUsed: false, rerankUsed: false },
+          results: [],
+          diagnostics: [],
+        }
+      },
+    })
+    const hooks = await plugin({ ...input, client: fakeClient.client } as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
+      hyde: { enabled: true, threshold: 1 },
+    })
+
+    await semanticSearchTool(hooks).execute({ query: "session" }, {
+      sessionID: "s1",
+      directory: "/repo",
+      worktree: "/repo",
+    } as never)
+
+    expect(errorMessage).toBe("No opencode model is tracked for session s1")
   })
 
   test("source reader rejects paths outside the plugin worktree", async () => {
@@ -647,4 +741,39 @@ function semanticGetChunkTool(hooks: Awaited<ReturnType<typeof castPlugin>>) {
     throw new Error("semantic_get_chunk tool was not registered")
   }
   return semanticGetChunk
+}
+
+function createFakeClient() {
+  const calls: Array<{ type: "create" | "prompt" | "delete"; parameters: unknown }> = []
+  return {
+    calls,
+    client: {
+      session: {
+        create: async (parameters: {
+          body?: { parentID?: string; title?: string }
+          query?: { directory?: string }
+        }) => {
+          calls.push({ type: "create", parameters })
+          return { data: { id: "hyde-session" }, error: undefined }
+        },
+        prompt: async (parameters: {
+          path: { id: string }
+          query?: { directory?: string }
+          body?: {
+            model?: { providerID: string; modelID: string }
+            tools?: Record<string, boolean>
+            system?: string
+            parts: Array<{ type: string; text?: string }>
+          }
+        }) => {
+          calls.push({ type: "prompt", parameters })
+          return { data: { info: {}, parts: [{ type: "text", text: "synthetic session document" }] }, error: undefined }
+        },
+        delete: async (parameters: { path: { id: string }; query?: { directory?: string } }) => {
+          calls.push({ type: "delete", parameters })
+          return { data: true, error: undefined }
+        },
+      },
+    },
+  }
 }

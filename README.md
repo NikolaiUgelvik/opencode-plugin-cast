@@ -23,7 +23,6 @@ Add the plugin to your opencode config:
           "model": "text-embedding-3-small"
         },
         "hyde": {
-          "model": "gpt-4o-mini",
           "threshold": 0.35
         }
       }
@@ -219,9 +218,14 @@ The bundled grammar set targets TypeScript/TSX, JavaScript/JSX, Python, Go, Rust
 
 ## HyDE
 
-The plugin runs normal embedding search first. If the best similarity is below `hyde.threshold`, it asks the configured chat model to produce a concise hypothetical code-search target, embeds that text, and reranks candidates.
+The plugin runs normal embedding search first. If the best similarity is below `hyde.threshold`, it asks a chat model to produce a concise hypothetical code-search target, embeds that text, and reranks candidates.
 
-HyDE is enabled by default when `hyde.model` is configured. Set `hyde.enabled` to `false` to disable it:
+HyDE has two modes:
+
+- If `hyde.baseURL` and `hyde.model` are both set, Cast calls that OpenAI-compatible `/chat/completions` endpoint directly.
+- If HyDE is enabled but that complete pair is not set, Cast uses the current opencode session model. The plugin learns the current model from `chat.message`, creates a temporary child session for the HyDE prompt, disables tools for that prompt, then deletes the temporary session.
+
+Set `hyde.enabled` to `false` to disable HyDE. You can set `hyde.threshold` without setting a model; that keeps the opencode-session fallback.
 
 ```json
 {
@@ -231,7 +235,7 @@ HyDE is enabled by default when `hyde.model` is configured. Set `hyde.enabled` t
 }
 ```
 
-HyDE defaults to the embedding provider base URL and API key when `hyde.baseURL`, `hyde.apiKey`, and `hyde.apiKeyEnv` are omitted. HyDE failures fall back to normal embedding results.
+Complete OpenAI-compatible HyDE requires both `hyde.baseURL` and `hyde.model`. HyDE failures fall back to normal embedding results.
 
 ## Local Development
 

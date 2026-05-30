@@ -27,6 +27,16 @@ export type RerankOptions = {
   candidateMultiplier: number
 }
 
+export type HydeOptions = {
+  mode: "openai-compatible" | "opencode"
+  // biome-ignore lint/style/useNamingConvention: Matches the existing plugin option name.
+  baseURL?: string
+  apiKey?: string
+  model?: string
+  threshold: number
+  enabled: boolean
+}
+
 export type LexicalIndex = {
   documentCount: number
   averageDocumentLength: number

@@ -25,9 +25,10 @@ describe("parseOptions", () => {
       dimensions: undefined,
     })
     expect(options.hyde).toEqual({
-      baseURL: "https://example.test/v1",
-      apiKey: "secret",
-      model: "gpt-4o-mini",
+      mode: "opencode",
+      baseURL: undefined,
+      apiKey: undefined,
+      model: undefined,
       threshold: 0.42,
       enabled: true,
     })
@@ -190,6 +191,133 @@ describe("parseOptions", () => {
     expect(options.diagnostics).toContain("embedding.baseURL is required")
   })
 
+  test("defaults hyde to opencode fallback when embedding is configured", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+      },
+      {},
+    )
+
+    expect(options.hyde).toEqual({
+      mode: "opencode",
+      baseURL: undefined,
+      apiKey: undefined,
+      model: undefined,
+      threshold: 0.35,
+      enabled: true,
+    })
+  })
+
+  test("keeps hyde disabled when explicitly disabled", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        hyde: {
+          enabled: false,
+        },
+      },
+      {},
+    )
+
+    expect(options.hyde).toEqual({
+      mode: "opencode",
+      baseURL: undefined,
+      apiKey: undefined,
+      model: undefined,
+      threshold: 0.35,
+      enabled: false,
+    })
+  })
+
+  test("uses opencode fallback for threshold-only hyde config", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        hyde: {
+          threshold: 0.6,
+        },
+      },
+      {},
+    )
+
+    expect(options.hyde).toEqual({
+      mode: "opencode",
+      baseURL: undefined,
+      apiKey: undefined,
+      model: undefined,
+      threshold: 0.6,
+      enabled: true,
+    })
+  })
+
+  test("uses opencode fallback for partial hyde config", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        hyde: {
+          model: "gpt-4o-mini",
+          threshold: 0.2,
+          enabled: true,
+        },
+      },
+      {},
+    )
+
+    expect(options.hyde).toEqual({
+      mode: "opencode",
+      baseURL: undefined,
+      apiKey: undefined,
+      model: undefined,
+      threshold: 0.2,
+      enabled: true,
+    })
+  })
+
+  test("uses openai-compatible hyde mode when base url and model are configured", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "embedding-key",
+          model: "text-embedding-3-small",
+        },
+        hyde: {
+          baseURL: "https://hyde.example.test/v1",
+          apiKeyEnv: "HYDE_KEY",
+          model: "gpt-4o-mini",
+          threshold: 0.2,
+        },
+      },
+      { HYDE_KEY: "hyde-secret" },
+    )
+
+    expect(options.hyde).toEqual({
+      mode: "openai-compatible",
+      baseURL: "https://hyde.example.test/v1",
+      apiKey: "hyde-secret",
+      model: "gpt-4o-mini",
+      threshold: 0.2,
+      enabled: true,
+    })
+  })
+
   test("uses OPENCODE_CAST_CACHE_DIR before xdg fallback", () => {
     const options = parseOptions(
       {
@@ -254,7 +382,7 @@ describe("parseOptions", () => {
     expect(options.diagnostics).not.toContain("embedding.model is required")
   })
 
-  test("preserves valid hyde fields when threshold is invalid", () => {
+  test("reports invalid hyde fields while preserving opencode fallback", () => {
     const options = parseOptions(
       {
         embedding: {
@@ -263,16 +391,24 @@ describe("parseOptions", () => {
           model: "text-embedding-3-small",
         },
         hyde: {
-          model: "gpt-4o-mini",
+          baseURL: "not a url",
+          model: 42,
           threshold: 2,
         },
       },
       {},
     )
 
-    expect(options.hyde.model).toBe("gpt-4o-mini")
-    expect(options.hyde.threshold).toBe(0.35)
-    expect(options.hyde.enabled).toBe(true)
+    expect(options.hyde).toEqual({
+      mode: "opencode",
+      baseURL: undefined,
+      apiKey: undefined,
+      model: undefined,
+      threshold: 0.35,
+      enabled: true,
+    })
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("hyde.baseURL:"))).toBe(true)
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("hyde.model:"))).toBe(true)
     expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("hyde.threshold:"))).toBe(true)
     expect(options.diagnostics).not.toContain("embedding.baseURL is required")
     expect(options.diagnostics).not.toContain("embedding.model is required")
