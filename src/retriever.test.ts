@@ -1,6 +1,25 @@
 import { describe, expect, test } from "bun:test"
+import { buildLexicalIndex } from "./lexical.js"
 import { retrieve } from "./retriever.js"
 import { createEmptyIndex } from "./store.js"
+import type { CastIndex, HybridRetrievalOptions } from "./types.js"
+
+const hybridOptions = (overrides: Partial<HybridRetrievalOptions> = {}): HybridRetrievalOptions => ({
+  enabled: true,
+  mode: "parallel",
+  rrfK: 60,
+  vectorCandidateMultiplier: 2,
+  bm25CandidateMultiplier: 2,
+  vectorWeight: 1,
+  bm25Weight: 4,
+  ...overrides,
+})
+
+function addLexicalStats(index: CastIndex) {
+  const lexical = buildLexicalIndex(index.chunks, index.symbols)
+  index.lexical = lexical.lexical
+  index.chunks = lexical.chunks
+}
 
 describe("retrieve", () => {
   test("returns normal embedding results without HyDE above threshold", async () => {
@@ -708,5 +727,467 @@ describe("retrieve", () => {
     expect(output.results[1].parentText).toContain("bLongName")
     expect(output.results[0].parentText).not.toBe(output.results[1].parentText)
     expect(output.results[1].parentRange).toEqual(index.symbols.s1.range)
+  })
+
+  test("parallel hybrid returns a BM25-only exact identifier match when vector score is weak", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.semantic = {
+      id: "semantic",
+      filePath: "src/semantic.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 25, lineStart: 1, lineEnd: 1 },
+      text: "function nearbyConcept() {}",
+      nonWhitespaceChars: 24,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    index.chunks.exact = {
+      id: "exact",
+      filePath: "src/exact.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 36, lineStart: 1, lineEnd: 1 },
+      text: "function throwCriticalParserError() {}",
+      nonWhitespaceChars: 35,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "throwCriticalParserError", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        hybrid: hybridOptions({ vectorCandidateMultiplier: 1, bm25CandidateMultiplier: 1 }),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath === "src/semantic.ts" ? "semantic" : "exact"].text,
+    })
+
+    expect(output.results.map((result) => result.topology.chunk.id)).toContain("exact")
+    expect(output.results.find((result) => result.topology.chunk.id === "exact")?.retrieval).toMatchObject({
+      mode: "hybrid",
+      hybridMode: "parallel",
+      bm25Rank: 1,
+    })
+    expect(output.results[0].retrieval?.vectorRank).toBeUndefined()
+  })
+
+  test("hybrid respects path filters for BM25 candidates", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.src = {
+      id: "src",
+      filePath: "src/allowed.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 28, lineStart: 1, lineEnd: 1 },
+      text: "function allowedNeedle() {}",
+      nonWhitespaceChars: 27,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+    index.chunks.test = {
+      id: "test",
+      filePath: "test/blocked.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 35, lineStart: 1, lineEnd: 1 },
+      text: "function allowedNeedleBlocked() {}",
+      nonWhitespaceChars: 34,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "allowedNeedleBlocked", topK: 3, includeParents: true, maxContextChars: 100, paths: ["src/"] },
+      options: {
+        topK: 3,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        hybrid: hybridOptions(),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function allowedNeedle() {}",
+    })
+
+    expect(output.results.map((result) => result.filePath)).toEqual(["src/allowed.ts"])
+  })
+
+  test("hybrid with missing lexical data degrades to vector-only with diagnostic", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.c1 = {
+      id: "c1",
+      filePath: "a.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+      text: "function a() {}",
+      nonWhitespaceChars: 13,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+
+    const output = await retrieve({
+      index,
+      input: { query: "a", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        hybrid: hybridOptions(),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function a() {}",
+    })
+
+    expect(output.results[0].retrieval).toEqual({ mode: "vector", vectorRank: 1 })
+    expect(output.diagnostics).toContain(
+      "hybrid retrieval requested but lexical data is unavailable; using vector-only retrieval",
+    )
+  })
+
+  test("hybrid disabled preserves vector-only behavior", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.vector = {
+      id: "vector",
+      filePath: "vector.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 24, lineStart: 1, lineEnd: 1 },
+      text: "function vectorOnly() {}",
+      nonWhitespaceChars: 23,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    index.chunks.lexical = {
+      id: "lexical",
+      filePath: "lexical.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 32, lineStart: 1, lineEnd: 1 },
+      text: "function exactDisabledHybrid() {}",
+      nonWhitespaceChars: 31,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "exactDisabledHybrid", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        hybrid: hybridOptions({ enabled: false }),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async () => "function vectorOnly() {}",
+    })
+
+    expect(output.results.map((result) => result.topology.chunk.id)).toEqual(["vector"])
+    expect(output.results[0].retrieval).toEqual({ mode: "vector", vectorRank: 1 })
+  })
+
+  test("bm25-prefilter hybrid ranks deterministically within the lexical pool", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.alpha = {
+      id: "alpha",
+      filePath: "alpha.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 28, lineStart: 1, lineEnd: 1 },
+      text: "function prefilterNeedle() {}",
+      nonWhitespaceChars: 27,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+    index.chunks.beta = {
+      id: "beta",
+      filePath: "beta.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 36, lineStart: 1, lineEnd: 1 },
+      text: "function prefilterNeedleBetter() {}",
+      nonWhitespaceChars: 35,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    index.chunks.gamma = {
+      id: "gamma",
+      filePath: "gamma.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 24, lineStart: 1, lineEnd: 1 },
+      text: "function unrelated() {}",
+      nonWhitespaceChars: 23,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "prefilterNeedle", topK: 2, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 2,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        hybrid: hybridOptions({ mode: "bm25-prefilter", vectorWeight: 10, bm25Weight: 1 }),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath.replace(".ts", "")].text,
+    })
+
+    expect(output.results.map((result) => result.topology.chunk.id)).toEqual(["beta", "alpha"])
+    expect(output.results.map((result) => result.retrieval?.hybridMode)).toEqual(["bm25-prefilter", "bm25-prefilter"])
+  })
+
+  test("vector-prefilter uses deterministic vector tie ordering before restricting BM25", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks["a-unrelated"] = {
+      id: "a-unrelated",
+      filePath: "a-unrelated.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 24, lineStart: 1, lineEnd: 1 },
+      text: "function unrelated() {}",
+      nonWhitespaceChars: 23,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    index.chunks["z-exact"] = {
+      id: "z-exact",
+      filePath: "z-exact.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 34, lineStart: 1, lineEnd: 1 },
+      text: "function exactVectorTieNeedle() {}",
+      nonWhitespaceChars: 33,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "exactVectorTieNeedle", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: false, threshold: 0.5 },
+        hybrid: hybridOptions({ mode: "vector-prefilter", vectorCandidateMultiplier: 1, bm25CandidateMultiplier: 1 }),
+      },
+      embed: async () => [1, 0],
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath.replace(".ts", "")].text,
+    })
+
+    expect(output.results[0].topology.chunk.id).toBe("z-exact")
+    expect(output.results[0].retrieval).toMatchObject({
+      mode: "hybrid",
+      hybridMode: "vector-prefilter",
+      vectorRank: 2,
+      bm25Rank: 1,
+    })
+  })
+
+  test("HyDE-triggered hybrid uses HyDE vector candidates while preserving BM25 fusion", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.initial = {
+      id: "initial",
+      filePath: "initial.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 24, lineStart: 1, lineEnd: 1 },
+      text: "function initial() {}",
+      nonWhitespaceChars: 23,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [1, 0],
+    }
+    index.chunks.hyde = {
+      id: "hyde",
+      filePath: "hyde.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 20, lineStart: 1, lineEnd: 1 },
+      text: "function hyde() {}",
+      nonWhitespaceChars: 19,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0, 1],
+    }
+    index.chunks.exact = {
+      id: "exact",
+      filePath: "exact.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 34, lineStart: 1, lineEnd: 1 },
+      text: "function rareHybridNeedle() {}",
+      nonWhitespaceChars: 33,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0.1, 0],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "rareHybridNeedle", topK: 2, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 2,
+        maxContextChars: 100,
+        hyde: { enabled: true, threshold: 0.5 },
+        hybrid: hybridOptions({ vectorWeight: 1, bm25Weight: 1 }),
+      },
+      embed: async (text) => (text === "hyde text" ? [0, 1] : [0, 0]),
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath.replace(".ts", "")].text,
+    })
+
+    expect(output.status.hydeUsed).toBe(true)
+    expect(output.results.map((result) => result.topology.chunk.id)).toContain("hyde")
+    expect(output.results.map((result) => result.topology.chunk.id)).toContain("exact")
+    expect(output.results.find((result) => result.topology.chunk.id === "exact")?.retrieval?.bm25Rank).toBe(1)
+  })
+
+  test("HyDE-triggered bm25-prefilter uses HyDE vector ranks within the BM25 pool", async () => {
+    const index = createEmptyIndex({
+      projectId: "p",
+      worktree: "/repo",
+      cacheKey: "key",
+      maxChunkNonWhitespaceChars: 2000,
+    })
+    index.metadata.status = "ready"
+    index.chunks.exact = {
+      id: "exact",
+      filePath: "exact.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 36, lineStart: 1, lineEnd: 1 },
+      text: "function sharedHydePrefilterNeedle() {}",
+      nonWhitespaceChars: 35,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0.8, 0.6],
+    }
+    index.chunks.hyde = {
+      id: "hyde",
+      filePath: "hyde.ts",
+      language: "typescript",
+      kind: "function",
+      range: { byteStart: 0, byteEnd: 41, lineStart: 1, lineEnd: 1 },
+      text: "function sharedHydePrefilterNeedleHyde() {}",
+      nonWhitespaceChars: 40,
+      nodeTypes: [],
+      symbolIds: [],
+      childChunkIds: [],
+      embedding: [0.1, Math.sqrt(0.99)],
+    }
+    addLexicalStats(index)
+
+    const output = await retrieve({
+      index,
+      input: { query: "sharedHydePrefilterNeedle", topK: 1, includeParents: true, maxContextChars: 100 },
+      options: {
+        topK: 1,
+        maxContextChars: 100,
+        hyde: { enabled: true, threshold: 0.95 },
+        hybrid: hybridOptions({ mode: "bm25-prefilter", vectorWeight: 10, bm25Weight: 1 }),
+      },
+      embed: async (text) => (text === "hyde text" ? [0, 1] : [1, 0]),
+      generateHyde: async () => "hyde text",
+      readSource: async (filePath) => index.chunks[filePath.replace(".ts", "")].text,
+    })
+
+    expect(output.status.hydeUsed).toBe(true)
+    expect(output.results[0].topology.chunk.id).toBe("hyde")
+    expect(output.results[0].retrieval).toMatchObject({
+      mode: "hybrid",
+      hybridMode: "bm25-prefilter",
+      vectorRank: 1,
+    })
   })
 })

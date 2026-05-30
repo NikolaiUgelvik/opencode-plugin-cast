@@ -765,4 +765,61 @@ describe("createIndexer", () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  test("persists lexical stats from chunk text and code metadata despite embedding failures", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-indexer-"))
+    try {
+      await Bun.write(path.join(dir, "nested.ts"), "export function findWidget() { return 1 }\n")
+      let index = createEmptyIndex({ projectId: "p", worktree: dir, cacheKey: "key", maxChunkNonWhitespaceChars: 2000 })
+      const indexer = createIndexer({
+        worktree: dir,
+        options: {
+          maxChunkNonWhitespaceChars: 2000,
+          includeGlobs: ["**/*.ts"],
+          excludeGlobs: [],
+          topK: 5,
+          maxContextChars: 12_000,
+        },
+        store: {
+          read: async () => index,
+          write: async (next) => {
+            index = next
+          },
+        },
+        parse: async (_filePath, source) => ({
+          language: "typescript",
+          root: {
+            type: "program",
+            startIndex: 0,
+            endIndex: source.length,
+            children: [{ type: "function_declaration", startIndex: 0, endIndex: source.length, children: [] }],
+          },
+        }),
+        embed: async () => {
+          throw new Error("embed failed")
+        },
+      })
+
+      await indexer.refresh()
+
+      const chunk = Object.values(index.chunks)[0]
+      expect(index.lexical?.documentCount).toBe(1)
+      expect(index.lexical?.averageDocumentLength).toBe(chunk.lexical?.length)
+      expect(chunk.embeddingError).toBe("embed failed")
+      expect(chunk.lexical?.termFrequencies.findwidget).toBeGreaterThan(0)
+      expect(chunk.lexical?.termFrequencies.nested).toBeGreaterThan(0)
+      expect(chunk.lexical?.termFrequencies.ts).toBeGreaterThan(0)
+      expect(chunk.lexical?.termFrequencies.file).toBeGreaterThan(0)
+      expect(chunk.lexical?.termFrequencies.program).toBeGreaterThan(0)
+      expect(chunk.lexical?.termFrequencies.function).toBeGreaterThan(0)
+      expect(index.lexical?.documentFrequencies.findwidget).toBe(1)
+      expect(index.lexical?.documentFrequencies.nested).toBe(1)
+      expect(index.lexical?.documentFrequencies.ts).toBe(1)
+      expect(index.lexical?.documentFrequencies.file).toBe(1)
+      expect(index.lexical?.documentFrequencies.program).toBe(1)
+      expect(index.lexical?.documentFrequencies.function).toBe(1)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

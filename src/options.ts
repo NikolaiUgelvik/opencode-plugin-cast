@@ -10,12 +10,27 @@ const ApiConfig = z.object({
   dimensions: z.number().int().positive().optional(),
 })
 
+const HybridMode = z.enum(["parallel", "bm25-prefilter", "vector-prefilter"])
+const HybridOptions = z.object({
+  enabled: z.boolean().optional(),
+  mode: HybridMode.optional(),
+  rrfK: z.number().int().positive().optional(),
+  vectorCandidateMultiplier: z.number().int().positive().optional(),
+  bm25CandidateMultiplier: z.number().int().positive().optional(),
+  vectorWeight: z.number().positive().optional(),
+  bm25Weight: z.number().positive().optional(),
+})
+const RetrievalOptions = z.object({
+  hybrid: HybridOptions.optional(),
+})
+
 const OptionsSchema = z.object({
   embedding: ApiConfig.optional(),
   hyde: ApiConfig.extend({
     enabled: z.boolean().optional(),
     threshold: z.number().min(-1).max(1).optional(),
   }).optional(),
+  retrieval: RetrievalOptions.optional(),
   maxChunkNonWhitespaceChars: z.number().int().positive().optional(),
   maxContextChars: z.number().int().positive().optional(),
   topK: z.number().int().positive().optional(),
@@ -27,7 +42,17 @@ const OptionsSchema = z.object({
 const OptionFields = OptionsSchema.shape
 const ApiFields = ApiConfig.shape
 const HydeFields = OptionFields.hyde.unwrap().shape
+const HybridFields = RetrievalOptions.shape.hybrid.unwrap().shape
 const DEFAULT_HYDE_THRESHOLD = 0.35
+const DEFAULT_HYBRID_OPTIONS = {
+  enabled: true,
+  mode: "parallel" as const,
+  rrfK: 60,
+  vectorCandidateMultiplier: 8,
+  bm25CandidateMultiplier: 8,
+  vectorWeight: 1,
+  bm25Weight: 1,
+}
 const DEFAULT_MAX_CHUNK_NON_WHITESPACE_CHARS = 2000
 const DEFAULT_MAX_CONTEXT_CHARS = 12_000
 const DEFAULT_TOP_K = 5
@@ -42,6 +67,7 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
   const parsed = {
     embedding: OptionFields.embedding.safeParse(inputRecord.success ? inputRecord.data.embedding : undefined),
     hyde: OptionFields.hyde.safeParse(inputRecord.success ? inputRecord.data.hyde : undefined),
+    retrieval: OptionFields.retrieval.safeParse(inputRecord.success ? inputRecord.data.retrieval : undefined),
     maxChunkNonWhitespaceChars: OptionFields.maxChunkNonWhitespaceChars.safeParse(
       inputRecord.success ? inputRecord.data.maxChunkNonWhitespaceChars : undefined,
     ),
@@ -60,6 +86,9 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
     hyde: parsed.hyde.success
       ? parsed.hyde.data
       : parseHydeConfig(inputRecord.success ? inputRecord.data.hyde : undefined),
+    retrieval: parsed.retrieval.success
+      ? parsed.retrieval.data
+      : parseRetrievalOptions(inputRecord.success ? inputRecord.data.retrieval : undefined),
     maxChunkNonWhitespaceChars: parsed.maxChunkNonWhitespaceChars.success
       ? parsed.maxChunkNonWhitespaceChars.data
       : undefined,
@@ -104,6 +133,19 @@ export function parseOptions(input: unknown, env: Record<string, string | undefi
       model: raw.hyde?.model,
       threshold: raw.hyde?.threshold ?? DEFAULT_HYDE_THRESHOLD,
       enabled: raw.hyde?.enabled ?? Boolean(raw.hyde?.model),
+    },
+    retrieval: {
+      hybrid: {
+        enabled: raw.retrieval?.hybrid?.enabled ?? DEFAULT_HYBRID_OPTIONS.enabled,
+        mode: raw.retrieval?.hybrid?.mode ?? DEFAULT_HYBRID_OPTIONS.mode,
+        rrfK: raw.retrieval?.hybrid?.rrfK ?? DEFAULT_HYBRID_OPTIONS.rrfK,
+        vectorCandidateMultiplier:
+          raw.retrieval?.hybrid?.vectorCandidateMultiplier ?? DEFAULT_HYBRID_OPTIONS.vectorCandidateMultiplier,
+        bm25CandidateMultiplier:
+          raw.retrieval?.hybrid?.bm25CandidateMultiplier ?? DEFAULT_HYBRID_OPTIONS.bm25CandidateMultiplier,
+        vectorWeight: raw.retrieval?.hybrid?.vectorWeight ?? DEFAULT_HYBRID_OPTIONS.vectorWeight,
+        bm25Weight: raw.retrieval?.hybrid?.bm25Weight ?? DEFAULT_HYBRID_OPTIONS.bm25Weight,
+      },
     },
     maxChunkNonWhitespaceChars: raw.maxChunkNonWhitespaceChars ?? DEFAULT_MAX_CHUNK_NON_WHITESPACE_CHARS,
     maxContextChars: raw.maxContextChars ?? DEFAULT_MAX_CONTEXT_CHARS,
@@ -161,5 +203,47 @@ function parseHydeConfig(input: unknown) {
     dimensions: api?.dimensions,
     enabled: parsed.enabled.success ? parsed.enabled.data : undefined,
     threshold: parsed.threshold.success ? parsed.threshold.data : undefined,
+  }
+}
+
+function parseRetrievalOptions(input: unknown) {
+  const inputRecord = z.record(z.string(), z.unknown()).safeParse(input ?? {})
+  if (!inputRecord.success) {
+    return
+  }
+
+  return {
+    hybrid: parseHybridOptions(inputRecord.data.hybrid),
+  }
+}
+
+function parseHybridOptions(input: unknown) {
+  const inputRecord = z.record(z.string(), z.unknown()).safeParse(input ?? {})
+  if (!inputRecord.success) {
+    return
+  }
+
+  const parsed = {
+    enabled: HybridFields.enabled.safeParse(inputRecord.data.enabled),
+    mode: HybridFields.mode.safeParse(inputRecord.data.mode),
+    rrfK: HybridFields.rrfK.safeParse(inputRecord.data.rrfK),
+    vectorCandidateMultiplier: HybridFields.vectorCandidateMultiplier.safeParse(
+      inputRecord.data.vectorCandidateMultiplier,
+    ),
+    bm25CandidateMultiplier: HybridFields.bm25CandidateMultiplier.safeParse(inputRecord.data.bm25CandidateMultiplier),
+    vectorWeight: HybridFields.vectorWeight.safeParse(inputRecord.data.vectorWeight),
+    bm25Weight: HybridFields.bm25Weight.safeParse(inputRecord.data.bm25Weight),
+  }
+
+  return {
+    enabled: parsed.enabled.success ? parsed.enabled.data : undefined,
+    mode: parsed.mode.success ? parsed.mode.data : undefined,
+    rrfK: parsed.rrfK.success ? parsed.rrfK.data : undefined,
+    vectorCandidateMultiplier: parsed.vectorCandidateMultiplier.success
+      ? parsed.vectorCandidateMultiplier.data
+      : undefined,
+    bm25CandidateMultiplier: parsed.bm25CandidateMultiplier.success ? parsed.bm25CandidateMultiplier.data : undefined,
+    vectorWeight: parsed.vectorWeight.success ? parsed.vectorWeight.data : undefined,
+    bm25Weight: parsed.bm25Weight.success ? parsed.bm25Weight.data : undefined,
   }
 }

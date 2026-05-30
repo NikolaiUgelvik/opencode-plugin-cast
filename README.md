@@ -136,6 +136,32 @@ Each search result includes labeled topology entries that keep chunk IDs actiona
 
 `semantic_search_code` returns a JSON payload with ranked results, diagnostics, and retrieval status metadata. `semantic_get_chunk` returns the requested chunk, labeled topology, related chunks, diagnostics, and status metadata. When embedding config is missing or invalid, opencode still starts and the tools return a clear configuration error.
 
+## Retrieval
+
+`semantic_search_code` uses hybrid semantic vector and BM25 lexical retrieval by default. BM25 helps with exact identifiers, paths, error strings, and config keys; vectors help with semantic intent and related code. Results are fused with reciprocal-rank fusion (RRF), so exact lexical matches and semantic matches can both contribute without requiring an external BM25 or search service.
+
+Configure hybrid retrieval under `retrieval.hybrid`:
+
+```json
+{
+  "retrieval": {
+    "hybrid": {
+      "enabled": true,
+      "mode": "parallel",
+      "rrfK": 60,
+      "vectorCandidateMultiplier": 8,
+      "bm25CandidateMultiplier": 8,
+      "vectorWeight": 1,
+      "bm25Weight": 1
+    }
+  }
+}
+```
+
+`mode` can be `parallel`, `bm25-prefilter`, or `vector-prefilter`. `parallel` searches both candidate sets before RRF. `bm25-prefilter` keeps BM25 candidates in fusion while limiting vector-side contributions to overlapping candidates, and `vector-prefilter` ranks BM25 within the vector candidate pool. When HyDE is triggered, it remains on the semantic/vector side while BM25 still participates in fusion.
+
+Lexical stats are persisted in the index cache. Older or missing cache data degrades to vector-only retrieval with a diagnostic until the index is refreshed or rebuilt.
+
 ## Cache
 
 The index is stored outside the repository. The default cache directory is `${XDG_CACHE_HOME:-~/.cache}/opencode/cast`.

@@ -1,6 +1,14 @@
+import { bm25Search, type RankedResult, reciprocalRankFusion } from "./lexical.js"
 import { searchVectors } from "./store.js"
 import { expandWithParentContext, summarizeTopology } from "./topology.js"
-import type { CastIndex, ChunkRecord, SearchInput, SearchOutput } from "./types.js"
+import type {
+  CastIndex,
+  ChunkRecord,
+  HybridRetrievalMode,
+  HybridRetrievalOptions,
+  SearchInput,
+  SearchOutput,
+} from "./types.js"
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -9,7 +17,12 @@ const CANDIDATE_MULTIPLIER = 3
 export async function retrieve(input: {
   index: CastIndex
   input: SearchInput
-  options: { topK: number; maxContextChars: number; hyde: { enabled: boolean; threshold: number } }
+  options: {
+    topK: number
+    maxContextChars: number
+    hyde: { enabled: boolean; threshold: number }
+    hybrid?: HybridRetrievalOptions
+  }
   embed(text: string): Promise<number[]>
   generateHyde(query: string): Promise<string>
   readSource(filePath: string): Promise<string>
@@ -35,8 +48,19 @@ export async function retrieve(input: {
   const vectors = chunks
     .filter((chunk): chunk is ChunkRecord & { embedding: number[] } => Boolean(chunk.embedding))
     .map((chunk) => ({ id: chunk.id, vector: chunk.embedding }))
+    .sort((left, right) => left.id.localeCompare(right.id))
   const queryVector = await input.embed(input.input.query)
-  const candidateCount = Math.max(topK * CANDIDATE_MULTIPLIER, topK)
+  const hybrid = input.options.hybrid
+  const canUseHybrid = Boolean(hybrid?.enabled && input.index.lexical && chunks.some((chunk) => chunk.lexical))
+  if (hybrid?.enabled && !canUseHybrid) {
+    diagnostics.push("hybrid retrieval requested but lexical data is unavailable; using vector-only retrieval")
+  }
+  const candidateCount = Math.max(
+    canUseHybrid && hybrid?.mode === "vector-prefilter"
+      ? vectors.length
+      : topK * (canUseHybrid ? (hybrid?.vectorCandidateMultiplier ?? 1) : CANDIDATE_MULTIPLIER),
+    topK,
+  )
   const initial = searchVectors(queryVector, vectors, candidateCount)
   const bestScore = initial[0]?.score
   const initialScores = Object.fromEntries(initial.map((result) => [result.id, result.score]))
@@ -56,10 +80,25 @@ export async function retrieve(input: {
             diagnostics: [`HyDE failed: ${error instanceof Error ? error.message : String(error)}`],
           }))
       : { scored: initial, hydeUsed: false, diagnostics: [] }
+  const ranked = canUseHybrid
+    ? hybridResults({
+        query: input.input.query,
+        chunks,
+        lexical: input.index.lexical,
+        topK,
+        vectorCandidates: hyde.scored,
+        hybrid: hybrid as HybridRetrievalOptions,
+      })
+    : {
+        results: hyde.scored.slice(0, topK),
+        retrieval: new Map(
+          hyde.scored.map((result, index) => [result.id, { mode: "vector" as const, vectorRank: index + 1 }]),
+        ),
+      }
   const seenParentRanges = new Set<string>()
   const results = (
     await Promise.all(
-      hyde.scored.slice(0, topK).flatMap(async (result) => {
+      ranked.results.flatMap(async (result) => {
         const chunk = chunksById[result.id]
         if (!chunk) {
           return []
@@ -96,6 +135,7 @@ export async function retrieve(input: {
             parentText: context.parentText,
             parentRange: context.parentRange,
             topology: summarizeTopology(chunk, chunksById, input.index.symbols),
+            retrieval: ranked.retrieval.get(result.id),
           },
         ]
       }),
@@ -119,6 +159,107 @@ export async function retrieve(input: {
     results,
     diagnostics: [...diagnostics, ...hyde.diagnostics],
   }
+}
+
+function hybridResults(input: {
+  query: string
+  chunks: ChunkRecord[]
+  lexical: CastIndex["lexical"]
+  topK: number
+  vectorCandidates: RankedResult[]
+  hybrid: HybridRetrievalOptions
+}) {
+  const bm25CandidateCount = Math.max(input.topK * input.hybrid.bm25CandidateMultiplier, input.topK)
+  const vectorCandidateCount = Math.max(input.topK * input.hybrid.vectorCandidateMultiplier, input.topK)
+  const allBm25 = bm25Search(input.query, input.chunks, input.lexical, bm25CandidateCount)
+  const vectorCandidates =
+    input.hybrid.mode === "vector-prefilter"
+      ? includeScoreTies(input.vectorCandidates, vectorCandidateCount)
+      : input.vectorCandidates.slice(0, vectorCandidateCount)
+  const bm25Candidates = candidatesForMode(input.hybrid.mode, {
+    query: input.query,
+    chunks: input.chunks,
+    lexical: input.lexical,
+    allBm25,
+    vectorCandidates,
+  })
+  const filteredVectorCandidates = vectorCandidatesForMode(input.hybrid.mode, {
+    vectorCandidates,
+    bm25Candidates,
+  })
+  const results = reciprocalRankFusion({
+    lists: [
+      { weight: input.hybrid.vectorWeight, results: filteredVectorCandidates },
+      { weight: input.hybrid.bm25Weight, results: bm25Candidates },
+    ],
+    rrfK: input.hybrid.rrfK,
+    topK: input.topK,
+  })
+  const vectorRanks = rankMap(filteredVectorCandidates)
+  const bm25Ranks = rankMap(bm25Candidates)
+  const bm25Scores = new Map(bm25Candidates.map((result) => [result.id, result.score]))
+  const retrieval = new Map(
+    results.map((result) => [
+      result.id,
+      {
+        mode: "hybrid" as const,
+        hybridMode: input.hybrid.mode,
+        vectorRank: vectorRanks.get(result.id),
+        bm25Rank: bm25Ranks.get(result.id),
+        bm25Score: bm25Scores.get(result.id),
+      },
+    ]),
+  )
+
+  return { results, retrieval }
+}
+
+function candidatesForMode(
+  mode: HybridRetrievalMode,
+  input: {
+    query: string
+    chunks: ChunkRecord[]
+    lexical: CastIndex["lexical"]
+    allBm25: RankedResult[]
+    vectorCandidates: RankedResult[]
+  },
+) {
+  if (mode !== "vector-prefilter") {
+    return input.allBm25
+  }
+  const vectorIds = new Set(input.vectorCandidates.map((result) => result.id))
+  return bm25Search(
+    input.query,
+    input.chunks.filter((chunk) => vectorIds.has(chunk.id)),
+    input.lexical,
+    input.allBm25.length,
+  )
+}
+
+function vectorCandidatesForMode(
+  mode: HybridRetrievalMode,
+  input: {
+    vectorCandidates: RankedResult[]
+    bm25Candidates: RankedResult[]
+  },
+) {
+  if (mode !== "bm25-prefilter") {
+    return input.vectorCandidates
+  }
+  const bm25Ids = new Set(input.bm25Candidates.map((result) => result.id))
+  return input.vectorCandidates.filter((result) => bm25Ids.has(result.id))
+}
+
+function rankMap(results: RankedResult[]) {
+  return new Map(results.map((result, index) => [result.id, index + 1]))
+}
+
+function includeScoreTies(results: RankedResult[], limit: number) {
+  const cutoffScore = results[limit - 1]?.score
+  if (cutoffScore === undefined) {
+    return results.slice()
+  }
+  return results.filter((result) => result.score >= cutoffScore)
 }
 
 function parentContext(input: {

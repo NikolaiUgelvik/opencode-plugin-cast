@@ -24,6 +24,70 @@ describe("index store", () => {
     }
   })
 
+  test("reads valid lexical cache data", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project" })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree: "/repo",
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "ready"
+      index.lexical = {
+        documentCount: 1,
+        averageDocumentLength: 2,
+        documentFrequencies: { alpha: 1 },
+      }
+      index.chunks.c = {
+        id: "c",
+        filePath: "src/a.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+        text: "alpha alpha",
+        nonWhitespaceChars: 10,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+        lexical: { length: 2, termFrequencies: { alpha: 2 } },
+      }
+      await store.write(index)
+
+      const cached = await store.read()
+
+      expect(cached.metadata.status).toBe("ready")
+      expect(cached.lexical?.documentFrequencies.alpha).toBe(1)
+      expect(cached.chunks.c.lexical?.termFrequencies.alpha).toBe(2)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("reads old cache data without lexical fields", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project" })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree: "/repo",
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      index.metadata.status = "ready"
+      await mkdir(path.join(dir, "project"), { recursive: true })
+      await Bun.write(path.join(dir, "project", "index.json"), JSON.stringify(index))
+
+      const cached = await store.read()
+
+      expect(cached.metadata.status).toBe("ready")
+      expect(cached.lexical).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   test("returns empty index without diagnostics for missing files", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
     try {
@@ -150,6 +214,79 @@ describe("index store", () => {
       expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
 
       await Bun.write(path.join(dir, "project", "index.json"), JSON.stringify({ ...index, symbols: { s: {} } }))
+      expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("returns empty index for current-version JSON with invalid lexical data", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "cast-store-"))
+    try {
+      const store = createIndexStore({ cacheDir: dir, cacheKey: "project" })
+      const index = createEmptyIndex({
+        projectId: "p",
+        worktree: "/repo",
+        cacheKey: "project",
+        maxChunkNonWhitespaceChars: 2000,
+      })
+      const chunk = {
+        id: "c",
+        filePath: "src/a.ts",
+        language: "typescript",
+        kind: "function",
+        range: { byteStart: 0, byteEnd: 10, lineStart: 1, lineEnd: 1 },
+        text: "alpha",
+        nonWhitespaceChars: 5,
+        nodeTypes: [],
+        symbolIds: [],
+        childChunkIds: [],
+      }
+      await mkdir(path.join(dir, "project"), { recursive: true })
+
+      await Bun.write(
+        path.join(dir, "project", "index.json"),
+        JSON.stringify({
+          ...index,
+          lexical: { documentCount: -1, averageDocumentLength: 1, documentFrequencies: { alpha: 1 } },
+        }),
+      )
+      expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
+
+      await Bun.write(
+        path.join(dir, "project", "index.json"),
+        JSON.stringify({
+          ...index,
+          lexical: { documentCount: 1, averageDocumentLength: -1, documentFrequencies: { alpha: 1 } },
+        }),
+      )
+      expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
+
+      await Bun.write(
+        path.join(dir, "project", "index.json"),
+        JSON.stringify({
+          ...index,
+          lexical: { documentCount: 1, averageDocumentLength: 1, documentFrequencies: { alpha: -1 } },
+        }),
+      )
+      expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
+
+      await Bun.write(
+        path.join(dir, "project", "index.json"),
+        JSON.stringify({
+          ...index,
+          chunks: { c: { ...chunk, lexical: { length: -1, termFrequencies: { alpha: 1 } } } },
+        }),
+      )
+      expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
+
+      await Bun.write(
+        path.join(dir, "project", "index.json"),
+        JSON.stringify({
+          ...index,
+          chunks: { c: { ...chunk, lexical: { length: 1, termFrequencies: { alpha: -1 } } } },
+        }),
+      )
       expect((await store.read()).metadata.diagnostics[0]).toContain("rebuilding corrupt index")
     } finally {
       await rm(dir, { recursive: true, force: true })

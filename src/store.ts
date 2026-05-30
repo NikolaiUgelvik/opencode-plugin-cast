@@ -89,7 +89,8 @@ function isCastIndex(value: unknown): value is CastIndex {
     isIndexMetadata(value.metadata) &&
     isRecordMap(value.files, isFileRecord) &&
     isRecordMap(value.chunks, isChunkRecord) &&
-    isRecordMap(value.symbols, isSymbolRecord)
+    isRecordMap(value.symbols, isSymbolRecord) &&
+    (value.lexical === undefined || isLexicalIndex(value.lexical))
   )
 }
 
@@ -141,8 +142,22 @@ function isChunkRecord(value: unknown) {
     isOptionalString(value.previousSiblingChunkId) &&
     isOptionalString(value.nextSiblingChunkId) &&
     (value.embedding === undefined || isNumberArray(value.embedding)) &&
-    isOptionalString(value.embeddingError)
+    isOptionalString(value.embeddingError) &&
+    (value.lexical === undefined || isChunkLexicalStats(value.lexical))
   )
+}
+
+function isLexicalIndex(value: unknown) {
+  return (
+    isObject(value) &&
+    isNonnegativeNumber(value.documentCount) &&
+    isNonnegativeNumber(value.averageDocumentLength) &&
+    isRecordMap(value.documentFrequencies, isNonnegativeNumber)
+  )
+}
+
+function isChunkLexicalStats(value: unknown) {
+  return isObject(value) && isNonnegativeNumber(value.length) && isRecordMap(value.termFrequencies, isNonnegativeNumber)
 }
 
 function isSymbolRecord(value: unknown) {
@@ -183,6 +198,10 @@ function isStringArray(value: unknown) {
 
 function isNumberArray(value: unknown) {
   return Array.isArray(value) && value.every((item) => typeof item === "number")
+}
+
+function isNonnegativeNumber(value: unknown) {
+  return typeof value === "number" && value >= 0
 }
 
 function isOptionalString(value: unknown) {

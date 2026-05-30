@@ -407,6 +407,52 @@ describe("cast plugin", () => {
     }
   })
 
+  test("retrieve wiring passes parsed hybrid retrieval options", async () => {
+    const index = emptyReadyIndex()
+    let hybrid: unknown
+    const plugin = createCastPluginForTest({
+      createIndexer: () => ({ refresh: async () => emptyReadyIndex() }),
+      createStore: () => ({ read: async () => index, write: async () => undefined }),
+      retrieve: async (input) => {
+        hybrid = input.options.hybrid
+        return {
+          status: { ...index.metadata, hydeUsed: false },
+          results: [],
+          diagnostics: [],
+        }
+      },
+    })
+    const hooks = await plugin(input as never, {
+      embedding: { baseURL: "https://example.test/v1", apiKey: "key", model: "embed" },
+      retrieval: {
+        hybrid: {
+          enabled: true,
+          mode: "bm25-prefilter",
+          rrfK: 42,
+          vectorCandidateMultiplier: 3,
+          bm25CandidateMultiplier: 5,
+          vectorWeight: 7,
+          bm25Weight: 11,
+        },
+      },
+    })
+
+    await semanticSearchTool(hooks).execute({ query: "query text" }, {
+      worktree: "/repo",
+      directory: "/repo",
+    } as never)
+
+    expect(hybrid).toEqual({
+      enabled: true,
+      mode: "bm25-prefilter",
+      rrfK: 42,
+      vectorCandidateMultiplier: 3,
+      bm25CandidateMultiplier: 5,
+      vectorWeight: 7,
+      bm25Weight: 11,
+    })
+  })
+
   test("source reader rejects paths outside the plugin worktree", async () => {
     let rejected = false
     let outsidePath = ""

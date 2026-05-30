@@ -4,6 +4,7 @@ import path from "node:path"
 import { minimatch } from "minimatch"
 import { castChunks, type SyntaxNode } from "./cast.js"
 import { fallbackChunks } from "./fallback.js"
+import { buildLexicalIndex } from "./lexical.js"
 import { assignSymbolsToChunks, attachTopology, extractSymbols } from "./topology.js"
 import type { CastIndex } from "./types.js"
 
@@ -99,9 +100,12 @@ export function createIndexer(input: {
         }
       }
 
+      const lexicalIndex = buildLexicalIndex(nextChunks, nextSymbols)
+
       index.files = nextFiles
-      index.chunks = nextChunks
+      index.chunks = lexicalIndex.chunks
       index.symbols = nextSymbols
+      index.lexical = lexicalIndex.lexical
       index.metadata.worktree = input.worktree
       index.metadata.maxChunkNonWhitespaceChars = input.options.maxChunkNonWhitespaceChars
       index.metadata.status = "ready"

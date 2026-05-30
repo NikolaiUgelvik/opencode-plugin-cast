@@ -7,6 +7,37 @@ export type SourceRange = {
 
 export type ChunkKind = "file" | "class" | "function" | "method" | "block" | "fallback"
 
+export type HybridRetrievalMode = "parallel" | "bm25-prefilter" | "vector-prefilter"
+
+export type HybridRetrievalOptions = {
+  enabled: boolean
+  mode: HybridRetrievalMode
+  rrfK: number
+  vectorCandidateMultiplier: number
+  bm25CandidateMultiplier: number
+  vectorWeight: number
+  bm25Weight: number
+}
+
+export type LexicalIndex = {
+  documentCount: number
+  averageDocumentLength: number
+  documentFrequencies: Record<string, number>
+}
+
+export type ChunkLexicalStats = {
+  length: number
+  termFrequencies: Record<string, number>
+}
+
+export type SearchResultRetrievalDetails = {
+  mode: "vector" | "hybrid"
+  hybridMode?: HybridRetrievalMode
+  vectorRank?: number
+  bm25Rank?: number
+  bm25Score?: number
+}
+
 export type ChunkRecord = {
   id: string
   filePath: string
@@ -23,6 +54,7 @@ export type ChunkRecord = {
   nextSiblingChunkId?: string
   embedding?: number[]
   embeddingError?: string
+  lexical?: ChunkLexicalStats
 }
 
 export type SymbolRecord = {
@@ -61,6 +93,7 @@ export type CastIndex = {
   files: Record<string, FileRecord>
   chunks: Record<string, ChunkRecord>
   symbols: Record<string, SymbolRecord>
+  lexical?: LexicalIndex
 }
 
 export type SearchInput = {
@@ -136,6 +169,7 @@ export type SearchResult = {
   parentText?: string
   parentRange?: SourceRange
   topology: SearchResultTopology
+  retrieval?: SearchResultRetrievalDetails
 }
 
 export type SearchOutput = {

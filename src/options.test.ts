@@ -34,6 +34,71 @@ describe("parseOptions", () => {
     expect(options.maxChunkNonWhitespaceChars).toBe(2000)
     expect(options.maxContextChars).toBe(12_000)
     expect(options.topK).toBe(5)
+    expect(options.retrieval.hybrid).toEqual({
+      enabled: true,
+      mode: "parallel",
+      rrfK: 60,
+      vectorCandidateMultiplier: 8,
+      bm25CandidateMultiplier: 8,
+      vectorWeight: 1,
+      bm25Weight: 1,
+    })
+  })
+
+  test("parses configured hybrid retrieval options", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        retrieval: {
+          hybrid: {
+            enabled: false,
+            mode: "bm25-prefilter",
+            rrfK: 40,
+            vectorCandidateMultiplier: 5,
+            bm25CandidateMultiplier: 9,
+            vectorWeight: 0.75,
+            bm25Weight: 1.25,
+          },
+        },
+      },
+      {},
+    )
+
+    expect(options.retrieval.hybrid).toEqual({
+      enabled: false,
+      mode: "bm25-prefilter",
+      rrfK: 40,
+      vectorCandidateMultiplier: 5,
+      bm25CandidateMultiplier: 9,
+      vectorWeight: 0.75,
+      bm25Weight: 1.25,
+    })
+  })
+
+  test("reports invalid hybrid retrieval options", () => {
+    const options = parseOptions(
+      {
+        embedding: {
+          baseURL: "https://example.test/v1",
+          apiKey: "literal",
+          model: "text-embedding-3-small",
+        },
+        retrieval: {
+          hybrid: {
+            mode: "bad",
+            rrfK: 0,
+          },
+        },
+      },
+      {},
+    )
+
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("retrieval.hybrid.mode:"))).toBe(true)
+    expect(options.diagnostics.some((diagnostic) => diagnostic.startsWith("retrieval.hybrid.rrfK:"))).toBe(true)
   })
 
   test("returns missing embedding config instead of throwing", () => {

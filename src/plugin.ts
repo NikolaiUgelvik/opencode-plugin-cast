@@ -102,7 +102,7 @@ This tool searches syntax-aware code chunks such as functions, classes, methods,
             const output = await (dependencies.retrieve ?? retrieve)({
               index: await store.read(),
               input: args,
-              options,
+              options: { ...options, hybrid: options.retrieval.hybrid },
               embed: (text) => client.embed({ ...embedding, input: text }),
               generateHyde: (query) =>
                 options.hyde.baseURL && options.hyde.model
